@@ -102,7 +102,7 @@ const SwipeCard = React.memo(
                                 resizeMode="cover"
                             />
                         </TouchableOpacity>
-                    ) : isActive ? (
+                    ) : isActive && !fullscreenVisible ? (
                         <View className="h-full w-full">
                             <Video
                                 ref={videoRef}
