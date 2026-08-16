@@ -10,6 +10,7 @@ import Animated, {
 import { ResizeMode, Video } from 'expo-av';
 import { AssetType } from '@/common/lib/localstorage/types/LocalStorageTypes';
 import { bytesToHumanReadable } from '@/util/MediaUtil';
+import FullscreenViewer from './fullscreen-viewer';
 
 const SwipeCard = React.memo(
     ({
@@ -18,15 +19,29 @@ const SwipeCard = React.memo(
         totalCount,
         isActive,
         isPaused,
+        isMuted,
+        onToggleMuted,
+        autoplayVideos,
     }: {
         item: AssetType;
         index: number;
         totalCount: number;
         isActive: boolean;
         isPaused: boolean;
+        isMuted: boolean;
+        onToggleMuted: () => void;
+        autoplayVideos: boolean;
     }) => {
         const fadeAnim = useSharedValue(0);
         const [showMetadata, setShowMetadata] = useState(false);
+        const [fullscreenVisible, setFullscreenVisible] = useState(false);
+        // Manual play state used when autoplay is disabled ("tap to play").
+        const [videoPlaying, setVideoPlaying] = useState(false);
+
+        useEffect(() => {
+            // Reset manual play state when the underlying asset changes.
+            setVideoPlaying(false);
+        }, [item?.uri]);
 
         const toggleMetadata = () => {
             const nextValue = !showMetadata;
@@ -64,25 +79,55 @@ const SwipeCard = React.memo(
                 ? `${item.width} x ${item.height}`
                 : 'Unknown';
 
+        const isVideo = item?.mediaType === 'video';
+
+        // Autoplay ON (default): follow the deck pause state while dragging.
+        // Autoplay OFF: video stays paused until the user taps it.
+        const videoShouldPlay =
+            !fullscreenVisible &&
+            (autoplayVideos ? !isPaused : videoPlaying);
+
         return (
             <View className="flex-1 flex flex-col p-2">
                 <View className="h-2/3 rounded-2xl overflow-hidden relative">
-                    {item?.mediaType === 'photo' ? (
-                        <Image
-                            source={{ uri: item?.uri }}
+                    {!isVideo ? (
+                        <TouchableOpacity
+                            onPress={() => setFullscreenVisible(true)}
+                            activeOpacity={0.9}
                             className="h-full w-full"
-                            resizeMode="cover"
-                        />
+                        >
+                            <Image
+                                source={{ uri: item?.uri }}
+                                className="h-full w-full"
+                                resizeMode="cover"
+                            />
+                        </TouchableOpacity>
                     ) : isActive ? (
-                        <Video
-                            ref={videoRef}
-                            source={{ uri: item?.uri }}
-                            style={{ width: '100%', height: '100%' }}
-                            shouldPlay={!isPaused}
-                            resizeMode={ResizeMode.COVER}
-                            isMuted
-                            isLooping
-                        />
+                        <View className="h-full w-full">
+                            <Video
+                                ref={videoRef}
+                                source={{ uri: item?.uri }}
+                                style={{ width: '100%', height: '100%' }}
+                                shouldPlay={videoShouldPlay}
+                                resizeMode={ResizeMode.COVER}
+                                isMuted={isMuted}
+                                isLooping
+                            />
+                            {/* Tap-to-play overlay when autoplay is disabled */}
+                            {!autoplayVideos && !videoPlaying && (
+                                <TouchableOpacity
+                                    onPress={() => setVideoPlaying(true)}
+                                    className="absolute inset-0 items-center justify-center bg-black/30"
+                                    activeOpacity={1}
+                                >
+                                    <MaterialIcons
+                                        name="play-circle-outline"
+                                        size={64}
+                                        color="white"
+                                    />
+                                </TouchableOpacity>
+                            )}
+                        </View>
                     ) : (
                         <View className="h-full w-full bg-black items-center justify-center">
                             <MaterialIcons name="play-circle-outline" size={64} color="white" />
@@ -97,9 +142,23 @@ const SwipeCard = React.memo(
                         <MaterialIcons name="info" size={24} color="white" />
                     </TouchableOpacity>
 
+                    {/* Audio Toggle Button (video only, next to info) */}
+                    {isVideo && (
+                        <TouchableOpacity
+                            onPress={onToggleMuted}
+                            className="absolute top-4 right-16 bg-black/50 p-2 rounded-full"
+                        >
+                            <MaterialIcons
+                                name={isMuted ? 'volume-off' : 'volume-up'}
+                                size={24}
+                                color="white"
+                            />
+                        </TouchableOpacity>
+                    )}
+
                     {/* Full Screen View Button */}
                     <TouchableOpacity
-                        onPress={() => console.log('View Full Screen')}
+                        onPress={() => setFullscreenVisible(true)}
                         className="absolute top-4 left-4 bg-black/50 p-2 rounded-full"
                     >
                         <MaterialIcons
@@ -186,6 +245,15 @@ const SwipeCard = React.memo(
                         </View>
                     </View>
                 </View>
+
+                {/* Fullscreen viewer (Modal) */}
+                <FullscreenViewer
+                    visible={fullscreenVisible}
+                    asset={item}
+                    isMuted={isMuted}
+                    onToggleMuted={onToggleMuted}
+                    onClose={() => setFullscreenVisible(false)}
+                />
             </View>
         );
     },
@@ -194,7 +262,9 @@ const SwipeCard = React.memo(
         prevProps.index === nextProps.index &&
         prevProps.totalCount === nextProps.totalCount &&
         prevProps.isActive === nextProps.isActive &&
-        prevProps.isPaused === nextProps.isPaused
+        prevProps.isPaused === nextProps.isPaused &&
+        prevProps.isMuted === nextProps.isMuted &&
+        prevProps.autoplayVideos === nextProps.autoplayVideos
 );
 
 export default SwipeCard;

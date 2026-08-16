@@ -15,6 +15,7 @@ import React, {
 } from 'react';
 import SwipeCard from './swipe-card';
 import { MaterialCommunityIcons, MaterialIcons } from '@expo/vector-icons';
+import * as MediaLibrary from 'expo-media-library';
 import {
     SwipeActionType,
     SwipeComponentInputType,
@@ -27,6 +28,7 @@ import { TrieEntryType } from '@/common/lib/localstorage/types/TrieTypes';
 import { getAssetsSize } from '@/util/ExpoFileUtil';
 import { deleteMedia } from '@/common/lib/swipeandroid/SwipeAndroidLibary';
 import LocalStorageStore from '@/common/lib/localstorage/LocalStorageStore';
+import { useSessionMuted, useSettings } from '@/common/lib/settings/SettingsStore';
 import { styles } from '../swiper/Styles';
 
 // Define a style object for the 3D shadow effect
@@ -44,6 +46,12 @@ const SwiperDeck = ({
     screenKeyType,
     reloadAssets,
 }: SwipeComponentInputType) => {
+    const { settings } = useSettings();
+    const [isMuted, setIsMuted] = useSessionMuted();
+    const handleToggleMuted = useCallback(() => {
+        setIsMuted(!isMuted);
+    }, [isMuted, setIsMuted]);
+
     const [currentIndex, setCurrentIndex] = useState<number>(0);
     const [toDeleteAssets, setToDeleteAssets] = useState<Array<AssetType>>([]);
     const [currentAsset, setCurrentAsset] = useState<AssetType>({
@@ -329,6 +337,65 @@ const SwiperDeck = ({
         console.debug('Trie size after action', localStorage.getTrieSize());
     };
 
+    /**
+     * Ensure the target album exists (creating it if missing), add the asset
+     * to it, and remove the asset from its source album when different
+     * (a true move, not a copy).
+     */
+    const moveAssetToAlbum = async (
+        asset: AssetType,
+        albumName: string
+    ): Promise<void> => {
+        try {
+            let album: MediaLibrary.Album | null =
+                await MediaLibrary.getAlbumAsync(albumName);
+            if (!album) {
+                album = await MediaLibrary.createAlbumAsync(albumName);
+            }
+            if (!album) return;
+            await MediaLibrary.addAssetsToAlbumAsync([asset.uri], album.id);
+            if (asset.albumId && asset.albumId !== album.id) {
+                await MediaLibrary.removeAssetsFromAlbumAsync(
+                    [asset.uri],
+                    asset.albumId
+                ).catch(() => {});
+            }
+        } catch (error) {
+            console.error(
+                `Failed to move asset to album "${albumName}":`,
+                error
+            );
+        }
+    };
+
+    /**
+     * Handles a top swipe: performs the configured settings action, then
+     * records the swipe as KEEP so the card leaves the deck and counts as kept.
+     */
+    const handleSwipeUp = async () => {
+        draggingRef.current = false;
+        setIsDragging(false);
+        const safeIndex = Math.min(
+            currentIndex,
+            mediaAssets.length - 1
+        );
+        const asset = mediaAssets[safeIndex];
+        if (!asset) return;
+
+        handleAction(SwipeActionType.KEEP, asset, safeIndex);
+
+        const action = settings.swipeUpAction;
+        if (action === 'favorites') {
+            await moveAssetToAlbum(asset, 'Favorites');
+        } else if (action === 'custom') {
+            const folderName = settings.customFolderName?.trim();
+            if (folderName) {
+                await moveAssetToAlbum(asset, folderName);
+            }
+            // Empty folder name: fall back to KEEP with no album operation.
+        }
+    };
+
     const undoLastAction = async () => {
         console.log('=== UNDO BUTTON PRESSED ===');
         console.log('Swiper ref exists:', !!swiperRef.current);
@@ -442,7 +509,11 @@ const SwiperDeck = ({
             fontSize: 24,
         };
 
-        return {
+        const labels: {
+            left: { title: string; style: object };
+            right: { title: string; style: object };
+            top?: { title: string; style: object };
+        } = {
             left: {
                 title: 'Delete',
                 style: {
@@ -464,12 +535,43 @@ const SwiperDeck = ({
             },
         };
 
+        // Top overlay only when a swipe-up action is configured.
+        if (settings.swipeUpAction === 'favorites') {
+            labels.top = {
+                title: 'Favorite',
+                style: {
+                    wrapper: {
+                        ...overlayStyle,
+                        backgroundColor: 'blue',
+                    },
+                    label: {
+                        color: 'white',
+                    },
+                },
+            };
+        } else if (settings.swipeUpAction === 'custom') {
+            labels.top = {
+                title: 'Move',
+                style: {
+                    wrapper: {
+                        ...overlayStyle,
+                        backgroundColor: 'amber',
+                    },
+                    label: {
+                        color: 'white',
+                    },
+                },
+            };
+        }
+
+        return labels;
+
         // return (
         //     <View style={[styles.overlayLabelContainer, { backgroundColor }]}>
         //         <Text style={styles.overlayLabelText}>{text}</Text>
         //     </View>
         // );
-    }, []);
+    }, [settings.swipeUpAction]);
 
     const renderCard = useCallback(
         (item: AssetType, index: number) => {
@@ -489,10 +591,13 @@ const SwiperDeck = ({
                     totalCount={mediaAssets.length}
                     isActive={index === currentIndex}
                     isPaused={isDragging}
+                    isMuted={isMuted}
+                    onToggleMuted={handleToggleMuted}
+                    autoplayVideos={settings.autoplayVideos}
                 />
             );
         },
-        [mediaAssets.length, currentIndex]
+        [mediaAssets.length, currentIndex, isMuted, handleToggleMuted, settings.autoplayVideos]
     );
 
     // Add a dummy card at the end of the media assets array
@@ -572,7 +677,7 @@ const SwiperDeck = ({
                         // Handle when all cards are swiped
                         console.log('All cards have been swiped');
                     }}
-                    disableTopSwipe
+                    disableTopSwipe={settings.swipeUpAction === 'off'}
                     disableBottomSwipe
                     onSwipedLeft={() => {
                         draggingRef.current = false;
@@ -597,6 +702,9 @@ const SwiperDeck = ({
                             asset,
                             safeIndex
                         );
+                    }}
+                    onSwipedTop={() => {
+                        handleSwipeUp();
                     }}
                     keyExtractor={(item: AssetType) => {
                         // Use a combination of uri and a random number to ensure uniqueness
