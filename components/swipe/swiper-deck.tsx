@@ -63,6 +63,8 @@ const SwiperDeck = ({
     const [enableUndo, setEnableUndo] = useState(false);
     const [hasHistory, setHasHistory] = useState(false);
     const [showConfirmation, setShowConfirmation] = useState(false);
+    const [isDragging, setIsDragging] = useState(false);
+    const draggingRef = useRef(false);
     
     const handleReviewAgain = useCallback(() => {
         setShowConfirmation(false);
@@ -237,6 +239,8 @@ const SwiperDeck = ({
                 localStorage.propogateExternalActions(deleteAssets);
                 setEnableUndo(false);
                 await reloadAssets();
+                setCurrentIndex(0);
+                swiperRef.current?.jumpToCardIndex(0);
             }
         } catch (error) {
             console.error('Error deleting assets:', error);
@@ -249,10 +253,6 @@ const SwiperDeck = ({
         mediaAsset: AssetType | null,
         index: number
     ) => {
-        if (index === mediaAssets.length - 1) {
-            setShowConfirmation(true);
-            return;
-        }
         
         if (!mediaAsset) {
             console.log('No media asset to process');
@@ -300,6 +300,11 @@ const SwiperDeck = ({
         if (action === SwipeActionType.SKIP) {
             localStorage.insert(uri, TrieEntryType.TO_SKIP);
             localStorage.incrementSkipCount(1);
+        }
+
+        if (index === mediaAssets.length - 1) {
+            setShowConfirmation(true);
+            return;
         }
         // Move to the next asset
         // set next asset as current asset
@@ -410,6 +415,7 @@ const SwiperDeck = ({
     };
 
     const proceedToDelete = async () => {
+        setShowConfirmation(false);
         setIsLoading(true);
         try {
             console.log('Assets marked for deletion:', toDeleteAssets.length);
@@ -481,10 +487,12 @@ const SwiperDeck = ({
                     item={item}
                     index={index}
                     totalCount={mediaAssets.length}
+                    isActive={index === currentIndex}
+                    isPaused={isDragging}
                 />
             );
         },
-        [mediaAssets.length]
+        [mediaAssets.length, currentIndex]
     );
 
     // Add a dummy card at the end of the media assets array
@@ -558,6 +566,8 @@ const SwiperDeck = ({
                     cards={cardsWithDummy}
                     stackSize={Math.min(2, mediaAssets.length)}
                     cardIndex={currentIndex}
+                    onSwiping={(x, y) => { if (!draggingRef.current && (Math.abs(x) > 10 || Math.abs(y) > 10)) { draggingRef.current = true; setIsDragging(true); } }}
+                    onSwipedAborted={() => { draggingRef.current = false; setIsDragging(false); }}
                     onSwipedAll={() => {
                         // Handle when all cards are swiped
                         console.log('All cards have been swiped');
@@ -565,6 +575,8 @@ const SwiperDeck = ({
                     disableTopSwipe
                     disableBottomSwipe
                     onSwipedLeft={() => {
+                        draggingRef.current = false;
+                        setIsDragging(false);
                         const safeIndex = Math.min(currentIndex, mediaAssets.length - 1);
                         const asset = mediaAssets[safeIndex];
                         if (!asset) return;
@@ -575,6 +587,8 @@ const SwiperDeck = ({
                         );
                     }}
                     onSwipedRight={() => {
+                        draggingRef.current = false;
+                        setIsDragging(false);
                         const safeIndex = Math.min(currentIndex, mediaAssets.length - 1);
                         const asset = mediaAssets[safeIndex];
                         if (!asset) return;

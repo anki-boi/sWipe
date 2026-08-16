@@ -1,5 +1,5 @@
 import { View, Text, Image, TouchableOpacity } from 'react-native';
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { LinearGradient } from 'expo-linear-gradient';
 import { MaterialCommunityIcons, MaterialIcons } from '@expo/vector-icons';
 import Animated, {
@@ -16,10 +16,14 @@ const SwipeCard = React.memo(
         item,
         index,
         totalCount,
+        isActive,
+        isPaused,
     }: {
         item: AssetType;
         index: number;
         totalCount: number;
+        isActive: boolean;
+        isPaused: boolean;
     }) => {
         const fadeAnim = useSharedValue(0);
         const [showMetadata, setShowMetadata] = useState(false);
@@ -36,6 +40,16 @@ const SwipeCard = React.memo(
             }),
             []
         );
+
+        const videoRef = useRef<Video>(null);
+        useEffect(() => {
+            if (item?.mediaType === 'video' && isActive) {
+                const player = videoRef.current;
+                return () => {
+                    player?.pauseAsync().catch(() => {});
+                };
+            }
+        }, [item?.mediaType, item?.uri, isActive]);
 
         // Get file format from filename or URI
         const getFileFormat = (filename?: string) => {
@@ -59,15 +73,20 @@ const SwipeCard = React.memo(
                             className="h-full w-full"
                             resizeMode="cover"
                         />
-                    ) : (
+                    ) : isActive ? (
                         <Video
+                            ref={videoRef}
                             source={{ uri: item?.uri }}
                             style={{ width: '100%', height: '100%' }}
-                            shouldPlay
+                            shouldPlay={!isPaused}
                             resizeMode={ResizeMode.COVER}
                             isMuted
                             isLooping
                         />
+                    ) : (
+                        <View className="h-full w-full bg-black items-center justify-center">
+                            <MaterialIcons name="play-circle-outline" size={64} color="white" />
+                        </View>
                     )}
 
                     {/* More Metadata Button */}
@@ -173,7 +192,9 @@ const SwipeCard = React.memo(
     (prevProps, nextProps) =>
         // prevProps.item === nextProps.item &&
         prevProps.index === nextProps.index &&
-        prevProps.totalCount === nextProps.totalCount
+        prevProps.totalCount === nextProps.totalCount &&
+        prevProps.isActive === nextProps.isActive &&
+        prevProps.isPaused === nextProps.isPaused
 );
 
 export default SwipeCard;
