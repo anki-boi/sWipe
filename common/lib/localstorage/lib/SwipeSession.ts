@@ -25,6 +25,7 @@ class SwipeSession {
     private history: ActionHistoryEntry[];
     private saveTimer: ReturnType<typeof setTimeout> | null = null;
     private saveChain: Promise<void> = Promise.resolve();
+    private _revision = 0;
 
     constructor(
         metadata: SwipeMetadata,
@@ -34,6 +35,14 @@ class SwipeSession {
         this.metadata = metadata;
         this.decisions = decisions;
         this.history = history;
+    }
+
+    /**
+     * Increases on every change to decisions (not on sync). Screens remember the
+     * value they last saw, so they can tell when another screen changed things.
+     */
+    get revision() {
+        return this._revision;
     }
 
     get name() {
@@ -78,19 +87,48 @@ class SwipeSession {
     }
 
     record(uri: string, action: SwipeActionType): void {
+        const previous = this.decisions.get(uri);
         this.decisions.set(uri, action);
-        this.history.push({ uri, action });
+        // One undo entry per item, so re-swiping doesn't stack duplicates
+        this.history = this.history.filter((entry) => entry.uri !== uri);
+        this.history.push(
+            previous ? { uri, action, previous } : { uri, action }
+        );
         if (this.history.length > MAX_HISTORY) {
             this.history.splice(0, this.history.length - MAX_HISTORY);
         }
         this.recount();
+        this._revision++;
+    }
+
+    /**
+     * Changes the decision for an item without touching the undo order, e.g.
+     * switching a marked item to Keep from the review screen.
+     */
+    setDecision(uri: string, action: SwipeActionType): void {
+        this.decisions.set(uri, action);
+        this.history = this.history.map((entry) =>
+            entry.uri === uri ? { ...entry, action } : entry
+        );
+        this.recount();
+        this._revision++;
+    }
+
+    /** Makes an item unreviewed again. */
+    clearDecision(uri: string): void {
+        this.forget([uri]);
     }
 
     undo(): ActionHistoryEntry | undefined {
         const entry = this.history.pop();
         if (entry) {
-            this.decisions.delete(entry.uri);
+            if (entry.previous) {
+                this.decisions.set(entry.uri, entry.previous);
+            } else {
+                this.decisions.delete(entry.uri);
+            }
             this.recount();
+            this._revision++;
         }
         return entry;
     }
@@ -111,6 +149,7 @@ class SwipeSession {
         uris.forEach((uri) => this.decisions.delete(uri));
         this.history = this.history.filter((entry) => !removed.has(entry.uri));
         this.recount();
+        this._revision++;
     }
 
     markDeleted(uris: string[], deletedMediaSize: number): void {
@@ -192,6 +231,7 @@ class SwipeSession {
         this.decisions.clear();
         this.history = [];
         this.metadata.resetCounts();
+        this._revision++;
     }
 
     static async load(
@@ -233,7 +273,13 @@ export function parseSessionData(value: string | null): {
                 typeof entry?.uri === 'string' &&
                 SWIPE_ACTIONS.has(entry.action)
             ) {
-                history.push({ uri: entry.uri, action: entry.action });
+                history.push({
+                    uri: entry.uri,
+                    action: entry.action,
+                    ...(SWIPE_ACTIONS.has(entry.previous as string)
+                        ? { previous: entry.previous }
+                        : {}),
+                });
             }
         }
     } catch (error) {

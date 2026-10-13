@@ -139,6 +139,43 @@ describe('SwipeSession', () => {
         expect(session.metadata.deleteCount).toBe(0);
         expect(session.metadata.getProgress()).toBe(0);
     });
+
+    it('setDecision switches a decision and keeps history in step', () => {
+        const session = newSession();
+        session.sync(['a', 'b']);
+        session.record('a', SwipeActionType.DELETE);
+        session.record('b', SwipeActionType.KEEP);
+        session.setDecision('a', SwipeActionType.KEEP);
+        expect(session.getPendingDeleteUris()).toEqual([]);
+        expect(session.metadata.keepCount).toBe(2);
+        expect(session.metadata.pendingDeleteCount).toBe(0);
+        session.undo();
+        const entry = session.undo();
+        expect(entry).toEqual({ uri: 'a', action: SwipeActionType.KEEP });
+    });
+
+    it('clearDecision makes an item unreviewed again', () => {
+        const session = newSession();
+        session.sync(['a', 'b']);
+        session.record('a', SwipeActionType.SKIP);
+        session.clearDecision('a');
+        expect(session.getDecision('a')).toBeUndefined();
+        expect(session.sync(['a', 'b'])).toBe(0);
+        expect(session.canUndo()).toBe(false);
+    });
+
+    it('bumps revision on changes but not on sync', () => {
+        const session = newSession();
+        session.sync(['a']);
+        const start = session.revision;
+        session.record('a', SwipeActionType.DELETE);
+        const afterRecord = session.revision;
+        expect(afterRecord).toBeGreaterThan(start);
+        session.sync(['a']);
+        expect(session.revision).toBe(afterRecord);
+        session.setDecision('a', SwipeActionType.KEEP);
+        expect(session.revision).toBeGreaterThan(afterRecord);
+    });
 });
 
 describe('SwipeMetadata', () => {
@@ -152,5 +189,37 @@ describe('SwipeMetadata', () => {
         metadata.totalCount = 2;
         metadata.deleteCount = 3;
         expect(metadata.getProgress()).toBe(1);
+    });
+});
+
+describe('re-swiping an item', () => {
+    it('keeps one undo entry and restores the earlier decision', () => {
+        const session = newSession();
+        session.sync(['a', 'b']);
+        session.record('a', SwipeActionType.DELETE);
+        session.record('b', SwipeActionType.KEEP);
+        // "Start over", then change a's decision
+        session.record('a', SwipeActionType.KEEP);
+        expect(session.toData().history.map((e) => e.uri)).toEqual(['b', 'a']);
+        expect(session.metadata.pendingDeleteCount).toBe(0);
+
+        const undone = session.undo();
+        expect(undone?.previous).toBe(SwipeActionType.DELETE);
+        expect(session.getDecision('a')).toBe(SwipeActionType.DELETE);
+        expect(session.metadata.pendingDeleteCount).toBe(1);
+    });
+
+    it('persists the previous decision', async () => {
+        const session = newSession();
+        session.sync(['a']);
+        session.record('a', SwipeActionType.SKIP);
+        session.record('a', SwipeActionType.KEEP);
+        await session.flush();
+        const loaded = await SwipeSession.load(
+            SwipeScreenKeyType.MONTH,
+            'January 2025'
+        );
+        loaded.undo();
+        expect(loaded.getDecision('a')).toBe(SwipeActionType.SKIP);
     });
 });

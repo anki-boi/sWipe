@@ -47,6 +47,8 @@ export function parseScreenKeyType(
             return SwipeScreenKeyType.MONTH;
         case SwipeScreenKeyType.ALBUM.toLowerCase():
             return SwipeScreenKeyType.ALBUM;
+        case SwipeScreenKeyType.FILTER.toLowerCase():
+            return SwipeScreenKeyType.FILTER;
         default:
             return null;
     }

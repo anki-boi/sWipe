@@ -8,65 +8,66 @@ import Animated, {
     LinearTransition,
 } from 'react-native-reanimated';
 import { LinearGradient } from 'expo-linear-gradient';
+import { useTheme } from '@/hooks/useTheme';
 
 const AnimatedTouchableOpacity =
     Animated.createAnimatedComponent(TouchableOpacity);
 
-const PRIMARY_COLOR = '#2563eb';
-const SECONDARY_COLOR = '#fff';
+const TABS: {
+    name: string;
+    route: '/' | '/album' | '/month';
+    icon: 'home' | 'perm-media' | 'calendar-month';
+}[] = [
+    { name: 'Home', route: '/', icon: 'home' },
+    { name: 'Albums', route: '/album', icon: 'perm-media' },
+    { name: 'Timeline', route: '/month', icon: 'calendar-month' },
+];
 
 export const BottomNav = () => {
     const navigation = useRouter();
     const pathname = usePathname();
-
-    const tabs: {
-        name: string;
-        route: '/' | '/album' | '/month';
-        icon: 'home' | 'perm-media' | 'calendar-month';
-    }[] = [
-        { name: 'Home', route: '/', icon: 'home' },
-        { name: 'Albums', route: '/album', icon: 'perm-media' },
-        { name: 'Timeline', route: '/month', icon: 'calendar-month' },
-    ];
+    const { colors } = useTheme();
 
     return (
         <LinearGradient
-            colors={['#2563eb', '#1e3a8a']}
+            colors={[colors.primary, colors.primaryStrong]}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
             style={styles.container}
         >
-            {tabs.map((tab) => {
+            {TABS.map((tab) => {
                 const isFocused = pathname === tab.route;
-
-                const onPress = () => {
-                    if (!isFocused) {
-                        navigation.navigate(tab.route);
-                    }
-                };
-
                 return (
                     <AnimatedTouchableOpacity
                         key={tab.route}
-                        onPress={onPress}
+                        onPress={() => {
+                            if (!isFocused) navigation.navigate(tab.route);
+                        }}
+                        accessibilityRole="tab"
+                        accessibilityLabel={tab.name}
+                        accessibilityState={{ selected: isFocused }}
                         layout={LinearTransition.springify().mass(0.5)}
                         style={[
                             styles.tabItem,
                             {
                                 backgroundColor: isFocused
-                                    ? SECONDARY_COLOR
+                                    ? colors.onPrimary
                                     : 'transparent',
                             },
                         ]}
                     >
                         <MaterialIcons
                             name={tab.icon}
-                            size={28}
-                            color={isFocused ? PRIMARY_COLOR : SECONDARY_COLOR}
+                            size={26}
+                            color={
+                                isFocused ? colors.primary : colors.onPrimary
+                            }
                         />
                         {isFocused && (
                             <Animated.Text
                                 entering={FadeIn.duration(200)}
                                 exiting={FadeOut.duration(200)}
-                                style={styles.text}
+                                style={[styles.text, { color: colors.primary }]}
                             >
                                 {tab.name}
                             </Animated.Text>
@@ -82,14 +83,15 @@ const styles = StyleSheet.create({
     container: {
         position: 'absolute',
         flexDirection: 'row',
-        justifyContent: 'center',
+        justifyContent: 'space-around',
         alignItems: 'center',
         width: '80%',
         alignSelf: 'center',
-        bottom: 40,
+        bottom: 32,
         borderRadius: 40,
         paddingHorizontal: 12,
-        paddingVertical: 15,
+        paddingVertical: 12,
+        elevation: 8,
         shadowColor: '#000',
         shadowOffset: { width: 0, height: 5 },
         shadowOpacity: 0.3,
@@ -99,13 +101,12 @@ const styles = StyleSheet.create({
         flexDirection: 'row',
         justifyContent: 'center',
         alignItems: 'center',
-        height: 36,
-        paddingHorizontal: 13,
+        height: 40,
+        paddingHorizontal: 14,
         borderRadius: 30,
     },
     text: {
-        color: PRIMARY_COLOR,
         marginLeft: 8,
-        fontWeight: '500',
+        fontFamily: 'Rubik-Medium',
     },
 });

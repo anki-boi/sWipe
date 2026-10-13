@@ -1,15 +1,12 @@
 import { View, Text, ActivityIndicator, TouchableOpacity } from 'react-native';
 import { useLocalSearchParams } from 'expo-router';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import {
-    getMediaByAlbum,
-    getMediaByMonth,
-    toAssetType,
-} from '@/util/MediaUtil';
-import { SwipeScreenKeyType } from '@/common/types/SwipeMediaTypes';
+import { toAssetType } from '@/util/MediaUtil';
+import { getScreenTitle, loadScreenMedia } from '@/common/lib/filters';
 import SwiperDeck from '@/components/swipe/swiper-deck';
 import { AssetType } from '@/common/lib/localstorage/types/LocalStorageTypes';
 import { parseScreenKeyType } from '@/common/lib/localstorage/lib/StorageKeys';
+import { useTheme } from '@/hooks/useTheme';
 
 type LoadState =
     | { status: 'loading' }
@@ -21,6 +18,7 @@ export default function SwipeScreen() {
         screenKey: string;
         screenKeyType: string;
     }>();
+    const { colors } = useTheme();
     const screenKey = params.screenKey ?? '';
     const screenKeyType = parseScreenKeyType(params.screenKeyType);
     const [state, setState] = useState<LoadState>({ status: 'loading' });
@@ -34,14 +32,11 @@ export default function SwipeScreen() {
             return;
         }
         try {
-            const page =
-                screenKeyType === SwipeScreenKeyType.MONTH
-                    ? await getMediaByMonth(screenKey)
-                    : await getMediaByAlbum(screenKey);
+            const assets = await loadScreenMedia(screenKeyType, screenKey);
             if (id === loadId.current) {
                 setState({
                     status: 'ready',
-                    assets: page.assets.map(toAssetType),
+                    assets: assets.map(toAssetType),
                 });
             }
         } catch (error) {
@@ -63,31 +58,35 @@ export default function SwipeScreen() {
     }, [loadAssets]);
 
     return (
-        <View className="flex-1 bg-white p-4">
+        <View className="flex-1 bg-background px-4 pb-2 pt-1">
             <Text
-                className="text-2xl font-rubik-semibold text-gray-800 mb-2"
+                className="mb-2 font-rubik-semibold text-2xl text-foreground"
                 numberOfLines={1}
             >
-                {screenKey}
+                {screenKeyType
+                    ? getScreenTitle(screenKeyType, screenKey)
+                    : screenKey}
             </Text>
             {state.status === 'loading' && (
                 <View className="flex-1 items-center justify-center">
-                    <ActivityIndicator size="large" color="#2563eb" />
+                    <ActivityIndicator size="large" color={colors.primary} />
                 </View>
             )}
             {state.status === 'error' && (
                 <View className="flex-1 items-center justify-center gap-y-4">
-                    <Text className="text-gray-500 text-center">
+                    <Text className="text-center font-rubik text-muted">
                         Couldn't load the media for {screenKey || 'this view'}.
                     </Text>
                     <TouchableOpacity
-                        className="bg-blue-600 px-5 py-3 rounded-full"
+                        className="rounded-full bg-primary px-5 py-3"
+                        accessibilityRole="button"
+                        accessibilityLabel="Try again"
                         onPress={() => {
                             setState({ status: 'loading' });
                             loadAssets();
                         }}
                     >
-                        <Text className="text-white font-medium">
+                        <Text className="font-rubik-medium text-on-primary">
                             Try again
                         </Text>
                     </TouchableOpacity>
@@ -95,7 +94,7 @@ export default function SwipeScreen() {
             )}
             {state.status === 'ready' && state.assets.length === 0 && (
                 <View className="flex-1 items-center justify-center">
-                    <Text className="text-gray-500 text-center">
+                    <Text className="text-center font-rubik text-muted">
                         Nothing left to review here.
                     </Text>
                 </View>

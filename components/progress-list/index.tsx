@@ -2,7 +2,7 @@ import {
     View,
     FlatList,
     Text,
-    TouchableNativeFeedback,
+    Pressable,
     ActivityIndicator,
 } from 'react-native';
 import React, { useCallback, useState } from 'react';
@@ -13,6 +13,7 @@ import { Title } from '../common/title';
 import { SwipeScreenKeyType } from '@/common/types/SwipeMediaTypes';
 import { getAllMetadata } from '@/common/lib/localstorage/SwipeStore';
 import { convertDateToRelativeTimeString } from '@/util/DateUtil';
+import { useTheme } from '@/hooks/useTheme';
 
 export interface ProgressListSource {
     name: string;
@@ -24,14 +25,18 @@ interface ProgressListItem extends ProgressListSource {
     lastOpened: string;
 }
 
-const CircularProgress = ({
+export const CircularProgress = ({
     progress,
     size,
     strokeWidth,
+    color,
+    trackColor,
 }: {
     progress: number;
     size: number;
     strokeWidth: number;
+    color: string;
+    trackColor: string;
 }) => {
     const radius = (size - strokeWidth) / 2;
     const circumference = 2 * Math.PI * radius;
@@ -44,7 +49,7 @@ const CircularProgress = ({
                 cx={size / 2}
                 cy={size / 2}
                 r={radius}
-                stroke="#1D4ED84D"
+                stroke={trackColor}
                 strokeWidth={strokeWidth}
                 fill="none"
             />
@@ -52,7 +57,7 @@ const CircularProgress = ({
                 cx={size / 2}
                 cy={size / 2}
                 r={radius}
-                stroke="#2563eb"
+                stroke={color}
                 strokeWidth={strokeWidth}
                 strokeLinecap="round"
                 strokeDasharray={circumference}
@@ -69,13 +74,17 @@ export const ProgressList = ({
     subtitle,
     type,
     loadSources,
+    header,
 }: {
     title: string;
     subtitle: string;
     type: SwipeScreenKeyType;
     loadSources: () => Promise<ProgressListSource[]>;
+    // Content scrolled above the list title, e.g. the Home dashboard
+    header?: React.ReactElement;
 }) => {
     const router = useRouter();
+    const { colors } = useTheme();
     const [items, setItems] = useState<ProgressListItem[] | null>(null);
 
     useFocusEffect(
@@ -112,75 +121,102 @@ export const ProgressList = ({
         }, [loadSources, type, title])
     );
 
-    const renderItem = ({ item }: { item: ProgressListItem }) => (
-        <TouchableNativeFeedback
-            onPress={() =>
-                router.push({
-                    pathname: '/[screenKeyType]/[screenKey]',
-                    params: { screenKeyType: type, screenKey: item.name },
-                })
-            }
-            accessibilityRole="button"
-            accessibilityLabel={`${item.name}, ${item.count} items, ${Math.round(item.progress * 100)}% reviewed`}
-        >
-            <View className="flex-row justify-between items-center p-3 border-b border-gray-200">
-                <View className="flex flex-row gap-4 items-center flex-1">
-                    <View className="relative">
-                        <CircularProgress
-                            progress={item.progress}
-                            size={56}
-                            strokeWidth={6}
-                        />
-                        <View className="absolute inset-0 flex justify-center items-center">
+    const renderItem = ({ item }: { item: ProgressListItem }) => {
+        const percent = Math.round(item.progress * 100);
+        return (
+            <Pressable
+                onPress={() =>
+                    router.push({
+                        pathname: '/[screenKeyType]/[screenKey]',
+                        params: { screenKeyType: type, screenKey: item.name },
+                    })
+                }
+                accessibilityRole="button"
+                accessibilityLabel={`${item.name}, ${item.count} items, ${percent}% reviewed`}
+                className="flex-row items-center gap-4 py-3 px-5 active:bg-surface"
+            >
+                <View className="relative">
+                    <CircularProgress
+                        progress={item.progress}
+                        size={52}
+                        strokeWidth={5}
+                        trackColor={colors.border}
+                        color={
+                            item.progress >= 1 ? colors.success : colors.primary
+                        }
+                    />
+                    <View className="absolute inset-0 items-center justify-center">
+                        {item.progress >= 1 ? (
+                            <MaterialIcons
+                                name="check"
+                                size={22}
+                                color={colors.success}
+                            />
+                        ) : (
                             <MaterialIcons
                                 name={
                                     type === SwipeScreenKeyType.MONTH
                                         ? 'calendar-month'
                                         : 'perm-media'
                                 }
-                                size={24}
-                                color="#2563eb"
+                                size={22}
+                                color={colors.primary}
                             />
-                        </View>
-                    </View>
-                    <View className="flex flex-col flex-1">
-                        <Text
-                            className="font-rubik-medium text-gray-800 text-xl"
-                            numberOfLines={1}
-                        >
-                            {item.name}
-                        </Text>
-                        <Text className="text-base text-gray-400">
-                            {item.count} items · {item.lastOpened}
-                        </Text>
+                        )}
                     </View>
                 </View>
-            </View>
-        </TouchableNativeFeedback>
-    );
+                <View className="flex-1">
+                    <Text
+                        className="font-rubik-medium text-foreground text-lg"
+                        numberOfLines={1}
+                    >
+                        {item.name}
+                    </Text>
+                    <Text className="font-rubik text-sm text-muted">
+                        {item.count} items ·{' '}
+                        {percent > 0 ? `${percent}% · ` : ''}
+                        {item.lastOpened === 'Never'
+                            ? 'Not started'
+                            : `Opened ${item.lastOpened.toLowerCase()}`}
+                    </Text>
+                </View>
+                <MaterialIcons
+                    name="chevron-right"
+                    size={22}
+                    color={colors.muted}
+                />
+            </Pressable>
+        );
+    };
 
     return (
-        <View className="flex-1 px-5 mt-8">
-            <View className="flex flex-row justify-between border-b-2 border-gray-200 border-dashed pb-1">
-                <Title text={title} subtitle={subtitle} />
-            </View>
-            {items === null ? (
-                <ActivityIndicator className="mt-6" color="#2563eb" />
-            ) : (
-                <FlatList
-                    className="mt-3"
-                    data={items}
-                    renderItem={renderItem}
-                    keyExtractor={(item) => item.name}
-                    // Leave room for the floating bottom navigation
-                    contentContainerStyle={{ paddingBottom: 120 }}
-                    ListEmptyComponent={
-                        <Text className="text-center text-gray-400 mt-6">
-                            No photos or videos found.
-                        </Text>
-                    }
-                />
-            )}
-        </View>
+        <FlatList
+            className="flex-1 bg-background"
+            data={items ?? []}
+            renderItem={renderItem}
+            keyExtractor={(item) => item.name}
+            // Leave room for the floating bottom navigation
+            contentContainerStyle={{ paddingBottom: 120 }}
+            ListHeaderComponent={
+                <View>
+                    {header}
+                    <View className="px-5 pt-6 pb-2">
+                        <Title text={title} subtitle={subtitle} />
+                    </View>
+                </View>
+            }
+            ListEmptyComponent={
+                items === null ? (
+                    <ActivityIndicator
+                        style={{ marginTop: 24 }}
+                        color={colors.primary}
+                    />
+                ) : (
+                    <Text className="text-center text-muted mt-6 font-rubik">
+                        No photos or videos found.
+                    </Text>
+                )
+            }
+        />
     );
 };

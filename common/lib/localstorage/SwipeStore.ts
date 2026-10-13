@@ -10,6 +10,7 @@ import {
     parseMetadataKey,
 } from './lib/StorageKeys';
 import { migrateLegacyStorage } from './lib/LegacyMigration';
+import { clearDailyProgressCache } from '../goals/DailyProgress';
 
 const MAX_CACHED_SESSIONS = 10;
 
@@ -160,37 +161,52 @@ export async function propagateDeletes(
     deleted: DeletedAsset[]
 ): Promise<void> {
     try {
-        const groups = new Map<string, DeletedAsset[]>();
-        let targetType: SwipeScreenKeyType;
-        if (sourceType === SwipeScreenKeyType.MONTH) {
-            targetType = SwipeScreenKeyType.ALBUM;
-            const albumTitles = new Map(
-                (await getAlbumsAsync()).map((album) => [album.id, album.title])
-            );
-            for (const asset of deleted) {
-                const title = asset.albumId
-                    ? albumTitles.get(asset.albumId)
-                    : undefined;
-                if (title) {
-                    groups.set(title, [...(groups.get(title) ?? []), asset]);
-                }
-            }
-        } else {
-            targetType = SwipeScreenKeyType.MONTH;
-            for (const asset of deleted) {
-                const month = getTimeBasedMonthKey(asset.creationTime);
-                groups.set(month, [...(groups.get(month) ?? []), asset]);
-            }
+        // Filter decks (e.g. Screenshots) credit both the months and albums
+        const updates: Promise<void>[] = [];
+        if (sourceType !== SwipeScreenKeyType.ALBUM) {
+            updates.push(creditAlbums(deleted));
         }
-
-        await Promise.all(
-            [...groups].map(([name, assets]) =>
-                addDeletedTo(targetType, name, assets)
-            )
-        );
+        if (sourceType !== SwipeScreenKeyType.MONTH) {
+            updates.push(creditMonths(deleted));
+        }
+        await Promise.all(updates);
     } catch (error) {
         console.error('Failed to propagate deletes:', error);
     }
+}
+
+async function creditAlbums(deleted: DeletedAsset[]) {
+    const albumTitles = new Map(
+        (await getAlbumsAsync()).map((album) => [album.id, album.title])
+    );
+    const groups = groupBy(deleted, (asset) =>
+        asset.albumId ? albumTitles.get(asset.albumId) : undefined
+    );
+    await Promise.all(
+        [...groups].map(([title, assets]) =>
+            addDeletedTo(SwipeScreenKeyType.ALBUM, title, assets)
+        )
+    );
+}
+
+async function creditMonths(deleted: DeletedAsset[]) {
+    const groups = groupBy(deleted, (asset) =>
+        getTimeBasedMonthKey(asset.creationTime)
+    );
+    await Promise.all(
+        [...groups].map(([month, assets]) =>
+            addDeletedTo(SwipeScreenKeyType.MONTH, month, assets)
+        )
+    );
+}
+
+function groupBy<T>(items: T[], getKey: (item: T) => string | undefined) {
+    const groups = new Map<string, T[]>();
+    for (const item of items) {
+        const key = getKey(item);
+        if (key) groups.set(key, [...(groups.get(key) ?? []), item]);
+    }
+    return groups;
 }
 
 async function addDeletedTo(
@@ -218,6 +234,7 @@ export async function clearAllProgress(): Promise<void> {
     }
     const keys = (await AsyncStorage.getAllKeys()).filter(isSwipeStorageKey);
     await AsyncStorage.multiRemove(keys);
+    clearDailyProgressCache();
     resetEpoch++;
 }
 
