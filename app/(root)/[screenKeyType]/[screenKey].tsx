@@ -1,87 +1,114 @@
-import { View, Text } from 'react-native';
+import { View, Text, ActivityIndicator, TouchableOpacity } from 'react-native';
 import { useLocalSearchParams } from 'expo-router';
-import { useEffect, useState } from 'react';
-import React from 'react';
-import {
-    getLocationFromAsset,
-    getMediaByAlbum,
-    getMediaByMonth,
-} from '@/util/MediaUtil';
-import { SwipeScreenKeyType } from '@/common/types/SwipeMediaTypes';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { toAssetType } from '@/util/MediaUtil';
+import { getScreenTitle, loadScreenMedia } from '@/common/lib/filters';
 import SwiperDeck from '@/components/swipe/swiper-deck';
 import { AssetType } from '@/common/lib/localstorage/types/LocalStorageTypes';
-import { getAssetSize } from '@/util/ExpoFileUtil';
-import { SwipeScreenComponent } from '@/components/swiper/SwipeScreenComponent';
-import { getAssetInfoAsync } from 'expo-media-library';
-import * as MediaLibrary from 'expo-media-library';
+import { parseScreenKeyType } from '@/common/lib/localstorage/lib/StorageKeys';
+import { useTheme } from '@/hooks/useTheme';
+
+type LoadState =
+    | { status: 'loading' }
+    | { status: 'error' }
+    | { status: 'ready'; assets: AssetType[] };
 
 export default function SwipeScreen() {
-    const { screenKey, screenKeyType } = useLocalSearchParams<{
+    const params = useLocalSearchParams<{
         screenKey: string;
         screenKeyType: string;
     }>();
-    const [mediaAssets, setMediaAssets] = useState<AssetType[]>([]);
+    const { colors } = useTheme();
+    const screenKey = params.screenKey ?? '';
+    const screenKeyType = parseScreenKeyType(params.screenKeyType);
+    const [state, setState] = useState<LoadState>({ status: 'loading' });
+    // Ignores results from a load that a newer one has superseded
+    const loadId = useRef(0);
 
-    const loadAssets = async (): Promise<void> => {
-        console.debug('Screen Key: ', screenKey);
-
-        if (screenKey == null || screenKey === '') {
-            console.error('Invalid screen key');
+    const loadAssets = useCallback(async (): Promise<void> => {
+        const id = ++loadId.current;
+        if (!screenKey || !screenKeyType) {
+            setState({ status: 'error' });
             return;
         }
         try {
-            const expoMedia =
-                screenKeyType === SwipeScreenKeyType.MONTH.toString()
-                    ? await getMediaByMonth(screenKey)
-                    : screenKeyType === SwipeScreenKeyType.ALBUM.toString()
-                      ? await getMediaByAlbum(screenKey)
-                      : null;
-
-            if (!expoMedia) {
-                console.error('Error loading assets: ', expoMedia);
-                return;
+            const assets = await loadScreenMedia(screenKeyType, screenKey);
+            if (id === loadId.current) {
+                setState({
+                    status: 'ready',
+                    assets: assets.map(toAssetType),
+                });
             }
-
-            const media: AssetType[] = await Promise.all(
-                expoMedia.assets.map(
-                    async (asset: MediaLibrary.Asset, index) => ({
-                        index: index,
-                        uri: asset.uri,
-                        albumId: asset.albumId,
-                        creationTime: asset.creationTime,
-                        assetSize: (await getAssetSize(asset.uri)) || 0,
-                        width: asset.width,
-                        height: asset.height,
-                        filename: asset.filename,
-                        mediaType: asset.mediaType,
-                        location: await getLocationFromAsset(asset),
-                    })
-                )
-            );
-
-            console.debug(`Found ${media.length} assets for ${screenKey}`);
-            setMediaAssets(media);
         } catch (error) {
             console.error('Error loading assets:', error);
+            if (id === loadId.current) {
+                setState({ status: 'error' });
+            }
         }
-    };
+    }, [screenKey, screenKeyType]);
 
     useEffect(() => {
+        setState({ status: 'loading' });
         loadAssets();
-    }, [screenKey]);
+        return () => {
+            // Invalidate the in-flight load; loadId is a counter, not a DOM ref.
+            // eslint-disable-next-line react-hooks/exhaustive-deps
+            loadId.current++;
+        };
+    }, [loadAssets]);
 
     return (
-        <View className="flex-1 bg-white p-4">
-            <SwiperDeck
-                mediaAssets={mediaAssets.filter((asset) => asset!==null)}
-                swipeKey={screenKey}
-                screenKeyType={
-                    screenKeyType == 'month'
-                        ? SwipeScreenKeyType.MONTH
-                        : SwipeScreenKeyType.ALBUM
-                }
-                reloadAssets={loadAssets}
-            />
+        <View className="flex-1 bg-background px-4 pb-2 pt-1">
+            <Text
+                className="mb-2 font-rubik-semibold text-2xl text-foreground"
+                numberOfLines={1}
+            >
+                {screenKeyType
+                    ? getScreenTitle(screenKeyType, screenKey)
+                    : screenKey}
+            </Text>
+            {state.status === 'loading' && (
+                <View className="flex-1 items-center justify-center">
+                    <ActivityIndicator size="large" color={colors.primary} />
+                </View>
+            )}
+            {state.status === 'error' && (
+                <View className="flex-1 items-center justify-center gap-y-4">
+                    <Text className="text-center font-rubik text-muted">
+                        Couldn't load the media for {screenKey || 'this view'}.
+                    </Text>
+                    <TouchableOpacity
+                        className="rounded-full bg-primary px-5 py-3"
+                        accessibilityRole="button"
+                        accessibilityLabel="Try again"
+                        onPress={() => {
+                            setState({ status: 'loading' });
+                            loadAssets();
+                        }}
+                    >
+                        <Text className="font-rubik-medium text-on-primary">
+                            Try again
+                        </Text>
+                    </TouchableOpacity>
+                </View>
+            )}
+            {state.status === 'ready' && state.assets.length === 0 && (
+                <View className="flex-1 items-center justify-center">
+                    <Text className="text-center font-rubik text-muted">
+                        Nothing left to review here.
+                    </Text>
+                </View>
+            )}
+            {state.status === 'ready' &&
+                state.assets.length > 0 &&
+                screenKeyType && (
+                    <SwiperDeck
+                        mediaAssets={state.assets}
+                        swipeKey={screenKey}
+                        screenKeyType={screenKeyType}
+                        reloadAssets={loadAssets}
+                    />
+                )}
         </View>
     );
 }

@@ -1,44 +1,67 @@
 import * as MediaLibrary from 'expo-media-library';
 import { getZeroIndexOfMonth } from './DateUtil';
-import { MediaData, SwipeActionType } from '@/common/types/SwipeMediaTypes';
-import { TrieEntryType } from '@/common/lib/localstorage/types/TrieTypes';
-import { LocationType } from '@/common/lib/localstorage/types/LocalStorageTypes';
+import { MediaData } from '@/common/types/SwipeMediaTypes';
+import { AssetType } from '@/common/lib/localstorage/types/LocalStorageTypes';
 
-export async function getMediaByAlbum(
-    albumName: string
-): Promise<MediaLibrary.PagedInfo<MediaLibrary.Asset>> {
+const PAGE_SIZE = 500;
+
+type MediaPage = MediaLibrary.PagedInfo<MediaLibrary.Asset>;
+
+// Fetches every page for the given options and returns them merged into one page.
+export async function getAllAssets(
+    options: Omit<MediaLibrary.AssetsOptions, 'first' | 'after'>
+): Promise<MediaPage> {
+    const assets: MediaLibrary.Asset[] = [];
+    let after: string | undefined = undefined;
+    let page: MediaPage;
+    do {
+        page = await MediaLibrary.getAssetsAsync({
+            ...options,
+            first: PAGE_SIZE,
+            after,
+        });
+        assets.push(...page.assets);
+        after = page.endCursor;
+    } while (page.hasNextPage);
+
+    return {
+        assets,
+        endCursor: page.endCursor,
+        hasNextPage: false,
+        totalCount: page.totalCount,
+    };
+}
+
+export async function getMediaByAlbum(albumName: string): Promise<MediaPage> {
     const album = await MediaLibrary.getAlbumAsync(albumName);
-    console.debug('album returned :', album);
 
-    const media = await MediaLibrary.getAssetsAsync({
+    if (!album) {
+        return { assets: [], endCursor: '', hasNextPage: false, totalCount: 0 };
+    }
+
+    return getAllAssets({
         mediaType: ['photo', 'video'],
         sortBy: ['creationTime'],
         album: album,
-        first: 10000, // Adjust as needed
     });
-
-    console.debug('album media returned :', media);
-    return media;
 }
 
-export async function getMediaByMonth(
-    monthString: string
-): Promise<MediaLibrary.PagedInfo<MediaLibrary.Asset>> {
+export async function getMediaByMonth(monthString: string): Promise<MediaPage> {
     const [monthName, year] = monthString.split(' ');
     // create object of month index manually
     const monthIndex = getZeroIndexOfMonth(monthName); // Get month index (0-based)
-    const startDate = new Date(Number(year), Number(monthIndex));
-    const endDate = new Date(Number(year), Number(monthIndex + 1)); // First day of next month
+    if (monthIndex < 0 || !/^\d{4}$/.test(year ?? '')) {
+        throw new Error(`Invalid month key: ${monthString}`);
+    }
+    const startDate = new Date(Number(year), monthIndex);
+    const endDate = new Date(Number(year), monthIndex + 1); // First day of next month
 
-    const media = await MediaLibrary.getAssetsAsync({
+    return getAllAssets({
         mediaType: ['photo', 'video'],
         sortBy: ['creationTime'],
         createdAfter: startDate,
         createdBefore: endDate,
-        first: 10000, // Adjust as needed
     });
-
-    return media;
 }
 
 // sort list of media data
@@ -64,30 +87,23 @@ export const sortMediaData = (
     });
 };
 
-export const fromSwipeActionTypeToTreeAction = (
-    action: SwipeActionType
-): TrieEntryType => {
-    switch (action) {
-        case SwipeActionType.DELETE:
-            return TrieEntryType.TO_DELETE;
-        case SwipeActionType.KEEP:
-            return TrieEntryType.TO_KEEP;
-        case SwipeActionType.SKIP:
-            return TrieEntryType.TO_SKIP;
-        default:
-            return TrieEntryType.NONE;
-    }
-};
-
-export const getLocationFromAsset = async (
-    asset: MediaLibrary.Asset
-): Promise<LocationType | undefined> => {
-    const assetInfo = (await MediaLibrary.getAssetInfoAsync(asset)).location;
-    if (!assetInfo) {
-        return undefined;
-    }
-    return { longitude: assetInfo.longitude, latitude: assetInfo.latitude };
-};
+export function toAssetType(
+    asset: MediaLibrary.Asset,
+    index: number
+): AssetType {
+    return {
+        id: asset.id,
+        index,
+        uri: asset.uri,
+        albumId: asset.albumId,
+        creationTime: asset.creationTime,
+        assetSize: 0,
+        width: asset.width,
+        height: asset.height,
+        filename: asset.filename,
+        mediaType: asset.mediaType,
+    };
+}
 
 export const bytesToHumanReadable = (bytes: number): string => {
     if (bytes === 0) return '0B';

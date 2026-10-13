@@ -103,15 +103,29 @@ android {
             keyAlias 'androiddebugkey'
             keyPassword 'android'
         }
+        release {
+            def uploadStoreFile = findProperty('SWIPE_UPLOAD_STORE_FILE') ?: System.getenv('SWIPE_UPLOAD_STORE_FILE')
+            if (uploadStoreFile) {
+                storeFile file(uploadStoreFile)
+                storePassword findProperty('SWIPE_UPLOAD_STORE_PASSWORD') ?: System.getenv('SWIPE_UPLOAD_STORE_PASSWORD')
+                keyAlias findProperty('SWIPE_UPLOAD_KEY_ALIAS') ?: System.getenv('SWIPE_UPLOAD_KEY_ALIAS')
+                keyPassword findProperty('SWIPE_UPLOAD_KEY_PASSWORD') ?: System.getenv('SWIPE_UPLOAD_KEY_PASSWORD')
+            }
+        }
     }
     buildTypes {
         debug {
             signingConfig signingConfigs.debug
         }
         release {
-            // Caution! In production, you need to generate your own keystore file.
-            // see https://reactnative.dev/docs/signed-apk-android.
-            signingConfig signingConfigs.debug
+            // Sign with the upload keystore when SWIPE_UPLOAD_* properties/env vars are set,
+            // otherwise fall back to the debug keystore (NOT suitable for distribution).
+            if (signingConfigs.release.storeFile != null) {
+                signingConfig signingConfigs.release
+            } else {
+                logger.warn("SWIPE_UPLOAD_STORE_FILE not configured: signing release build with the debug keystore")
+                signingConfig signingConfigs.debug
+            }
             shrinkResources (findProperty('android.enableShrinkResourcesInReleaseBuilds')?.toBoolean() ?: false)
             minifyEnabled enableProguardInReleaseBuilds
             proguardFiles getDefaultProguardFile("proguard-android.txt"), "proguard-rules.pro"

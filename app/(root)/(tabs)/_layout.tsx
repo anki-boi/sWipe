@@ -1,23 +1,31 @@
-import React from "react";
-import { Tabs } from "expo-router";
-import { View } from "react-native";
-import { BottomNav } from "@/components/common/bottom-nav";
-import Header from "@/components/common/Header";
+import React from 'react';
+import { Redirect, Tabs } from 'expo-router';
+import { BottomNav } from '@/components/common/bottom-nav';
+import { PermissionGate } from '@/components/common/permission-gate';
+import { usePreferences } from '@/hooks/usePreferences';
 
 export default function TabLayout() {
-    return (
-        <View className="flex-1">
-            {/* Expo Router's Tab Navigator */}
-          
-            <Tabs screenOptions={{ headerShown: false,tabBarStyle:{display:"none"} }}>
-                <Tabs.Screen name="/" />
-                <Tabs.Screen name="album" />
-                <Tabs.Screen name="month" />
-                <Tabs.Screen name="swipe" />
-            </Tabs>
+    const [preferences] = usePreferences();
 
+    // First run: onboarding comes before the permission prompt
+    if (!preferences.hasSeenOnboarding) {
+        return <Redirect href="/onboarding" />;
+    }
+
+    return (
+        <PermissionGate>
+            <Tabs
+                screenOptions={{
+                    headerShown: false,
+                    tabBarStyle: { display: 'none' },
+                }}
+            >
+                <Tabs.Screen name="index" />
+                <Tabs.Screen name="album/index" />
+                <Tabs.Screen name="month/index" />
+            </Tabs>
             {/* Custom Bottom Navigation */}
             <BottomNav />
-        </View>
+        </PermissionGate>
     );
 }

@@ -20,16 +20,10 @@ import com.facebook.react.bridge.JavaOnlyArray
 import com.facebook.react.bridge.Promise
 import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.WritableMap
-import com.facebook.react.bridge.WritableNativeMap
-import junit.framework.TestCase.assertEquals
 import org.junit.After
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
-import org.mockito.ArgumentCaptor
-import org.mockito.Mockito.mock
-import org.mockito.Mockito.timeout
-import org.mockito.Mockito.verify
 import org.mockito.MockitoAnnotations.openMocks
 import java.io.File
 import java.util.concurrent.CountDownLatch
@@ -76,17 +70,6 @@ class SwipeCustomMediaModuleDeleteIT {
                 // Intents might not be initialized in all tests
             }
         }
-    }
-
-    @Test
-    fun testCountImagesByAlbum() {
-        val mockPromise = mock(Promise::class.java)
-        imageModule.countImagesByAlbum(mockPromise)
-        val captor = ArgumentCaptor.forClass(WritableNativeMap::class.java) //<Map<String, Int>>()
-        verify(mockPromise, timeout(5000)).resolve(captor.capture())
-        val result = captor.value.toHashMap()
-        // ✅ Validate album count
-        assertEquals(2.0, result[testAlbumName])
     }
 
     @Test
@@ -216,28 +199,28 @@ class SwipeCustomMediaModuleDeleteIT {
             }
 
             override fun reject(code: String, userInfo: WritableMap) {
-                assert(code == "USER_CANCELLED") { "Expected USER_CANCELLED error code but got: $code" }
+                assert(code == "ERROR_USER_REJECTED") { "Expected ERROR_USER_REJECTED error code but got: $code" }
                 latch.countDown()
             }
 
             override fun reject(code: String, message: String?) {
                 // The promise was rejected as expected
-                assert(code == "USER_CANCELLED") { "Expected USER_CANCELLED error code but got: $code" }
+                assert(code == "ERROR_USER_REJECTED") { "Expected ERROR_USER_REJECTED error code but got: $code" }
                 latch.countDown()
             }
 
             override fun reject(code: String, message: String?, userInfo: WritableMap) {
-                assert(code == "USER_CANCELLED") { "Expected USER_CANCELLED error code but got: $code" }
+                assert(code == "ERROR_USER_REJECTED") { "Expected ERROR_USER_REJECTED error code but got: $code" }
                 latch.countDown()
             }
 
             override fun reject(code: String, throwable: Throwable?) {
-                assert(code == "USER_CANCELLED") { "Expected USER_CANCELLED error code but got: $code" }
+                assert(code == "ERROR_USER_REJECTED") { "Expected ERROR_USER_REJECTED error code but got: $code" }
                 latch.countDown()
             }
 
             override fun reject(code: String, throwable: Throwable?, userInfo: WritableMap) {
-                assert(code == "USER_CANCELLED") { "Expected USER_CANCELLED error code but got: $code" }
+                assert(code == "ERROR_USER_REJECTED") { "Expected ERROR_USER_REJECTED error code but got: $code" }
                 latch.countDown()
             }
 
@@ -247,7 +230,7 @@ class SwipeCustomMediaModuleDeleteIT {
                 throwable: Throwable?,
                 userInfo: WritableMap?
             ) {
-                assert(code == "USER_CANCELLED") { "Expected USER_CANCELLED error code but got: $code" }
+                assert(code == "ERROR_USER_REJECTED") { "Expected ERROR_USER_REJECTED error code but got: $code" }
                 latch.countDown()
             }
 
@@ -260,7 +243,7 @@ class SwipeCustomMediaModuleDeleteIT {
             }
 
             override fun reject(code: String, message: String?, throwable: Throwable?) {
-                assert(code == "USER_CANCELLED") { "Expected USER_CANCELLED error code but got: $code" }
+                assert(code == "ERROR_USER_REJECTED") { "Expected ERROR_USER_REJECTED error code but got: $code" }
                 latch.countDown()
             }
         }

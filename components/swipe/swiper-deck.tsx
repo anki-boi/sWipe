@@ -1,10 +1,4 @@
-import {
-    View,
-    TouchableOpacity,
-    Alert,
-    ActivityIndicator,
-    Text,
-} from 'react-native';
+import { View, Text, LayoutChangeEvent } from 'react-native';
 import Swiper from 'react-native-deck-swiper';
 import React, {
     useCallback,
@@ -13,30 +7,75 @@ import React, {
     useRef,
     useState,
 } from 'react';
+import { router, useFocusEffect } from 'expo-router';
+import { useIsFocused } from '@react-navigation/native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import SwipeCard from './swipe-card';
-import { MaterialCommunityIcons, MaterialIcons } from '@expo/vector-icons';
+import {
+    ActionButton,
+    EndSummary,
+    ProgressHeader,
+    ReviewPill,
+    Spinner,
+} from './deck-controls';
 import {
     SwipeActionType,
     SwipeComponentInputType,
-    SwipeScreenKeyType,
 } from '@/common/types/SwipeMediaTypes';
 import { AssetType } from '@/common/lib/localstorage/types/LocalStorageTypes';
-import LocalStorage from '@/common/lib/localstorage/lib/LocalStorage';
-import { useFocusEffect } from 'expo-router';
-import { TrieEntryType } from '@/common/lib/localstorage/types/TrieTypes';
-import { getAssetsSize } from '@/util/ExpoFileUtil';
-import { deleteMedia } from '@/common/lib/swipeandroid/SwipeAndroidLibary';
-import LocalStorageStore from '@/common/lib/localstorage/LocalStorageStore';
-import { styles } from '../swiper/Styles';
+import SwipeSession from '@/common/lib/localstorage/lib/SwipeSession';
+import {
+    acquireSession,
+    getResetEpoch,
+} from '@/common/lib/localstorage/SwipeStore';
+import { recordReviewed } from '@/common/lib/goals/DailyProgress';
+import { successFeedback, tapFeedback, warningFeedback } from '@/util/Haptics';
+import { useTheme } from '@/hooks/useTheme';
 
-// Define a style object for the 3D shadow effect
-const shadow3d = {
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.44,
-    shadowRadius: 10.32,
-    elevation: 16,
-};
+const END_CARD_URI = 'END_OF_DECK';
+const CARD_MARGIN_X = 12;
+const CARD_MARGIN_TOP = 4;
+// Room below the top card for the cards stacked behind it
+const CARD_MARGIN_BOTTOM = 24;
+
+type Direction = 'left' | 'right' | 'top';
+
+const labelWrapper = (
+    alignItems: 'flex-start' | 'flex-end' | 'center',
+    justifyContent: 'flex-start' | 'center'
+) => ({
+    flexDirection: 'column' as const,
+    alignItems,
+    justifyContent,
+    padding: 28,
+});
+
+const Stamp = ({ text, color }: { text: string; color: string }) => (
+    <View
+        style={{
+            borderWidth: 3,
+            borderColor: color,
+            backgroundColor: color,
+            borderRadius: 14,
+            paddingHorizontal: 16,
+            paddingVertical: 6,
+            transform: [
+                {
+                    rotate:
+                        text === 'DELETE'
+                            ? '12deg'
+                            : text === 'KEEP'
+                              ? '-12deg'
+                              : '0deg',
+                },
+            ],
+        }}
+    >
+        <Text className="font-rubik-bold text-2xl tracking-widest text-on-primary">
+            {text}
+        </Text>
+    </View>
+);
 
 const SwiperDeck = ({
     mediaAssets,
@@ -44,625 +83,417 @@ const SwiperDeck = ({
     screenKeyType,
     reloadAssets,
 }: SwipeComponentInputType) => {
-    const [currentIndex, setCurrentIndex] = useState<number>(0);
-    const [toDeleteAssets, setToDeleteAssets] = useState<Array<AssetType>>([]);
-    const [currentAsset, setCurrentAsset] = useState<AssetType>({
-        index: 0,
-        uri: '',
-        albumId: '',
-        creationTime: 0,
-        assetSize: 0,
-        width: 0,
-        height: 0,
-        filename: '',
-        mediaType: '',
-        location: undefined,
-    });
-    const [localStorage, setLocalStorage] = useState<LocalStorage | null>(null);
-    const [isLoading, setIsLoading] = useState(true);
-    const [enableUndo, setEnableUndo] = useState(false);
-    const [hasHistory, setHasHistory] = useState(false);
-    const [showConfirmation, setShowConfirmation] = useState(false);
-    
-    const handleReviewAgain = useCallback(() => {
-        setShowConfirmation(false);
-        // Ensure we're showing the last image
-        const lastIndex = Math.max(0, mediaAssets.length - 1);
-        setCurrentIndex(lastIndex);
-        swiperRef.current?.jumpToCardIndex(lastIndex);
-    }, [mediaAssets.length]);
-
-    // Effect to update enableUndo when localStorage or mediaAssets change
-    useEffect(() => {
-        if (localStorage) {
-            const hasHistory = localStorage.getActionHistorySize() > 0;
-            console.log('Action history changed. Has history:', hasHistory);
-            setEnableUndo(hasHistory);
-            setHasHistory(hasHistory);
-        }
-    }, [mediaAssets, localStorage]);
+    const { colors } = useTheme();
+    const insets = useSafeAreaInsets();
+    const isFocused = useIsFocused();
     const swiperRef = useRef<Swiper<AssetType>>(null);
+    const [session, setSession] = useState<SwipeSession | null>(null);
+    const [loadError, setLoadError] = useState(false);
+    // Changes whenever the deck is rebuilt so Swiper picks up the new start index
+    const [deckId, setDeckId] = useState(0);
+    const [startIndex, setStartIndex] = useState(0);
+    const [currentIndex, setCurrentIndex] = useState(0);
+    // Bumped after every session change so derived values re-render
+    const [revision, setRevision] = useState(0);
+    // Size of the area the cards are laid out in
+    const [area, setArea] = useState<{ width: number; height: number } | null>(
+        null
+    );
+    // Number of cards swiped in the current Swiper instance that can be
+    // animated back with swipeBack()
+    const swipeBackDepth = useRef(0);
+    // Last drag offset reported by Swiper, used to classify the swipe
+    const lastDrag = useRef<{ x: number; y: number } | null>(null);
+    // True while a card animation started by a button or undo is running;
+    // Swiper ignores swipeBack() during animations, so undo must wait.
+    const isAnimating = useRef(false);
+    const animationTimeout = useRef<ReturnType<typeof setTimeout>>();
+    // Bumped to rebuild the deck after progress was reset in Settings
+    const [reloadToken, setReloadToken] = useState(0);
+    const seenResetEpoch = useRef(getResetEpoch());
+    // Session revision this deck last accounted for. When it differs on focus,
+    // another screen (the review screen) changed decisions or deleted items.
+    const seenSessionRevision = useRef(0);
+
+    const refresh = () => {
+        if (session) seenSessionRevision.current = session.revision;
+        setRevision((r) => r + 1);
+    };
+
+    const startAnimation = () => {
+        isAnimating.current = true;
+        clearTimeout(animationTimeout.current);
+        // Failsafe in case Swiper never reports the end of the animation
+        animationTimeout.current = setTimeout(endAnimation, 1500);
+    };
+
+    const endAnimation = () => {
+        isAnimating.current = false;
+        clearTimeout(animationTimeout.current);
+    };
+
+    useEffect(() => () => clearTimeout(animationTimeout.current), []);
 
     useEffect(() => {
-        console.debug('use effect mounting:', swipeKey);
-        const reloadFromLocalStorageOrCache = async () => {
-            try {
-                await loadFromLocalStorage(swipeKey, screenKeyType);
-            } catch (e) {
-                console.error('error creating action trie', e);
-            }
+        let cancelled = false;
+        let release: (() => void) | undefined;
+        setLoadError(false);
+        acquireSession(screenKeyType, swipeKey)
+            .then(({ session: loaded, release: releaseSession }) => {
+                release = releaseSession;
+                if (cancelled) {
+                    releaseSession();
+                    return;
+                }
+                const first = loaded.sync(mediaAssets.map((a) => a.uri));
+                loaded.scheduleSave();
+                seenSessionRevision.current = loaded.revision;
+                swipeBackDepth.current = 0;
+                setSession(loaded);
+                setStartIndex(first);
+                setCurrentIndex(first);
+                setDeckId((id) => id + 1);
+                setRevision((r) => r + 1);
+            })
+            .catch((error) => {
+                console.error('Failed to open swipe session', error);
+                if (!cancelled) setLoadError(true);
+            });
+        return () => {
+            cancelled = true;
+            release?.();
         };
-        if (mediaAssets.length > 0 && screenKeyType) {
-            reloadFromLocalStorageOrCache();
-        }
-    }, [swipeKey, mediaAssets, screenKeyType]);
+    }, [swipeKey, screenKeyType, mediaAssets, reloadToken]);
 
     useFocusEffect(
         useCallback(() => {
-            console.log(mediaAssets)
-            console.debug('use focus effect mounting:', swipeKey);
-
+            if (seenResetEpoch.current !== getResetEpoch()) {
+                seenResetEpoch.current = getResetEpoch();
+                setReloadToken((token) => token + 1);
+            } else if (
+                session &&
+                session.revision !== seenSessionRevision.current
+            ) {
+                // The review screen kept or deleted items while we were away
+                seenSessionRevision.current = session.revision;
+                reloadAssets();
+            }
+            // Persist progress when leaving the screen
             return () => {
-                console.debug(
-                    'use focus effect unmounting: ',
-                    localStorage?.getName()
-                );
-                if (localStorage) {
-                    localStorage.save();
-                }
+                session?.flush();
             };
-        }, [localStorage])
+            // eslint-disable-next-line react-hooks/exhaustive-deps
+        }, [session])
     );
 
-    const loadFromLocalStorage = async (
-        key: string,
-        type: SwipeScreenKeyType
-    ): Promise<void> => {
-        setIsLoading(true);
-        try {
-            const doesLocalStorageExist = localStorage ? true : false;
-            const storage = doesLocalStorageExist
-                ? localStorage
-                : await LocalStorageStore.getInstance(key, type);
-            if (!doesLocalStorageExist) {
-                setLocalStorage(storage);
-            }
+    const pendingDeletes = useMemo(() => {
+        if (!session) return [];
+        const pending = new Set(session.getPendingDeleteUris());
+        return mediaAssets.filter((asset) => pending.has(asset.uri));
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [session, mediaAssets, revision]);
 
-            // if null return
-            if (!storage) {
-                console.error('Failed to load LocalStorage from storage', key);
-                return;
-            }
+    const canUndo = useMemo(
+        () => !!session?.canUndo(),
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+        [session, revision]
+    );
 
-            storage.updateWithExternalActionStack();
-            storage.activate();
+    const isAtEnd = currentIndex >= mediaAssets.length;
+    const keepCount = session?.metadata.keepCount ?? 0;
+    const skipCount = session?.metadata.skipCount ?? 0;
+    const reviewed = keepCount + skipCount + pendingDeletes.length;
 
-            // make local to keep and to delete uri
-            const localToDeleteUri = new Array<AssetType>();
-            let localCurrentIndex = storage.getCurrentIndex();
-            if (storage.getTotalCount() === 0) {
-                storage.setInitialCount(mediaAssets.length);
-            }
-            mediaAssets.forEach((asset, index) => {
-                const assetUri = asset.uri;
-                const action = storage.search(assetUri);
-                if (action === TrieEntryType.TO_DELETE) {
-                    localToDeleteUri.push({
-                        index: index,
-                        uri: assetUri,
-                        albumId: asset.albumId,
-                        creationTime: asset.creationTime,
-                        assetSize: asset.assetSize,
-                        width: asset.width,
-                        height: asset.height,
-                        filename: asset.filename,
-                        mediaType: asset.mediaType,
-                        location: asset.location,
-                    });
-                } else if (
-                    action !== TrieEntryType.TO_SKIP &&
-                    localCurrentIndex < 0
-                ) {
-                    localCurrentIndex = index;
-                }
-            });
+    // The library picks right/left before top using fixed thresholds, so an
+    // upward drag that drifts sideways would count as Keep/Delete even though
+    // the overlay showed SKIP. Classify drags by their dominant axis instead.
+    const resolveAction = (fallback: SwipeActionType): SwipeActionType => {
+        const drag = lastDrag.current;
+        lastDrag.current = null;
+        if (!drag) return fallback;
+        if (drag.y < 0 && Math.abs(drag.y) > Math.abs(drag.x)) {
+            return SwipeActionType.SKIP;
+        }
+        if (fallback === SwipeActionType.SKIP) {
+            return drag.x < 0 ? SwipeActionType.DELETE : SwipeActionType.KEEP;
+        }
+        return fallback;
+    };
 
-            const localAsset = mediaAssets[localCurrentIndex];
-            if (!localAsset) {
-                console.error(
-                    'No asset found in local storage: ',
-                    localAsset,
-                    'at index: ',
-                    localCurrentIndex,
-                    'total count: ',
-                    mediaAssets.length
-                );
-            }
-
-            setCurrentAsset({
-                index: localCurrentIndex,
-                uri: localAsset?.uri,
-                albumId: localAsset?.albumId,
-                creationTime: localAsset?.creationTime,
-                assetSize: localAsset?.assetSize,
-                width: localAsset?.width,
-                height: localAsset?.height,
-                filename: localAsset?.filename,
-                mediaType: localAsset?.mediaType,
-                location: localAsset?.location,
-            });
-            setCurrentIndex(localCurrentIndex);
-            swiperRef.current?.jumpToCardIndex(localCurrentIndex);
-            setToDeleteAssets(localToDeleteUri);
-            if (storage.getActionHistorySize() > 0) {
-                setEnableUndo(true);
-            }
-            console.debug('local current index: ', localCurrentIndex);
-            setIsLoading(false);
-        } catch (error) {
-            console.error(
-                'error loading action trie from local storage: ',
-                error
-            );
-            throw error;
+    const handleSwiped = (swiped: SwipeActionType, cardIndex: number) => {
+        const asset = mediaAssets[cardIndex];
+        const action = resolveAction(swiped);
+        if (!asset || !session) {
+            return;
+        }
+        if (action === SwipeActionType.DELETE) warningFeedback();
+        else tapFeedback();
+        // Re-swiping after "Start over" changes a decision; it isn't new work
+        const isNewReview = session.getDecision(asset.uri) === undefined;
+        session.record(asset.uri, action);
+        session.scheduleSave();
+        if (isNewReview) recordReviewed(1);
+        swipeBackDepth.current++;
+        setCurrentIndex(cardIndex + 1);
+        refresh();
+        if (cardIndex === mediaAssets.length - 1) {
+            successFeedback();
         }
     };
 
-    const deleteAssets = async (deleteAssets: AssetType[]) => {
-        // handle null assets
-        if (!deleteAssets || deleteAssets.length === 0) {
-            Alert.alert('No media', 'No assets available to delete');
+    const swipeWithButton = (direction: Direction) => {
+        if (isAnimating.current || !swiperRef.current) {
             return;
         }
-
-        try {
-            const deleteUris = deleteAssets.map((item) => item.uri);
-            const deletedMediaSize = await getAssetsSize(deleteUris);
-            const result: Boolean = await deleteMedia(deleteUris);
-            if (!localStorage) {
-                console.error('No action trie found in local storage');
-                return;
-            }
-            if (result) {
-                Alert.alert(
-                    'Deleted',
-                    'Selected media files have been deleted'
-                );
-
-                localStorage.incrementDeletedMediaSize(deletedMediaSize);
-                localStorage.incrementDeletedCount(deleteUris.length);
-                localStorage.setCurrentIndex(-1);
-                localStorage.clearActionHistory();
-                localStorage.save();
-                localStorage.propogateExternalActions(deleteAssets);
-                setEnableUndo(false);
-                await reloadAssets();
-            }
-        } catch (error) {
-            console.error('Error deleting assets:', error);
-            Alert.alert('Error', 'Failed to delete assets');
-        }
+        lastDrag.current = null;
+        startAnimation();
+        if (direction === 'left') swiperRef.current.swipeLeft();
+        else if (direction === 'right') swiperRef.current.swipeRight();
+        else swiperRef.current.swipeTop();
     };
 
-    const handleAction = (
-        action: SwipeActionType,
-        mediaAsset: AssetType | null,
-        index: number
-    ) => {
-        if (index === mediaAssets.length - 1) {
-            setShowConfirmation(true);
+    const undoLastAction = () => {
+        if (!session || !swiperRef.current || isAnimating.current) {
             return;
         }
-        
-        if (!mediaAsset) {
-            console.log('No media asset to process');
+        const entry = session.undo();
+        if (!entry) {
             return;
         }
-        if (!localStorage) {
-            console.error('No action trie found in local storage');
-            return;
-        }
-        const actionHistory = localStorage.getActionHistory();
-        if (!actionHistory) {
-            console.error('No action history object found to execute action');
-            return;
-        }
+        tapFeedback();
+        session.scheduleSave();
+        if (!entry.previous) recordReviewed(-1);
+        refresh();
 
-        console.debug('Trie size before action', localStorage.getTrieSize());
-        const uri = mediaAsset.uri;
+        const index = mediaAssets.findIndex((a) => a.uri === entry.uri);
+        if (index < 0) {
+            return;
+        }
+        if (index === currentIndex - 1 && swipeBackDepth.current > 0) {
+            swipeBackDepth.current--;
+            startAnimation();
+            swiperRef.current.swipeBack();
+        } else {
+            swipeBackDepth.current = 0;
+            swiperRef.current.jumpToCardIndex(index);
+        }
+        setCurrentIndex(index);
+    };
 
-        // Record the action in history
-        localStorage.pushActionHistory({
-            index: currentIndex,
-            action,
-            uri,
-            albumId: mediaAsset.albumId,
-            creationTime: mediaAsset.creationTime,
-            assetSize: mediaAsset.assetSize,
-            width: mediaAsset.width,
-            height: mediaAsset.height,
-            filename: mediaAsset.filename,
-            mediaType: mediaAsset.mediaType,
-            location: mediaAsset.location,
+    const startOver = () => {
+        swipeBackDepth.current = 0;
+        swiperRef.current?.jumpToCardIndex(0);
+        setCurrentIndex(0);
+    };
+
+    const openReview = () => {
+        session?.flush();
+        router.push({
+            pathname: '/review/[screenKeyType]/[screenKey]',
+            params: { screenKeyType, screenKey: swipeKey },
         });
-
-        // Handle specific actions
-        if (action === SwipeActionType.DELETE) {
-            setToDeleteAssets((prev) => [...prev, mediaAsset]);
-            localStorage.insert(uri, TrieEntryType.TO_DELETE);
-        }
-        if (action === SwipeActionType.KEEP) {
-            // add to keep trie
-            localStorage.insert(uri, TrieEntryType.TO_KEEP);
-            localStorage.incrementKeptCount(1);
-        }
-
-        if (action === SwipeActionType.SKIP) {
-            localStorage.insert(uri, TrieEntryType.TO_SKIP);
-            localStorage.incrementSkipCount(1);
-        }
-        // Move to the next asset
-        // set next asset as current asset
-        if (currentIndex < mediaAssets.length - 1) {
-            const nextAsset = mediaAssets[currentIndex + 1];
-            setCurrentAsset({
-                index: currentIndex + 1,
-                uri: nextAsset.uri,
-                albumId: nextAsset.albumId,
-                creationTime: nextAsset.creationTime,
-                assetSize: nextAsset.assetSize,
-                width: nextAsset.width,
-                height: nextAsset.height,
-                filename: nextAsset.filename,
-                mediaType: nextAsset.mediaType,
-                location: nextAsset.location,
-            });
-            localStorage.setCurrentIndex(currentIndex + 1);
-            setCurrentIndex((prev) => prev + 1);
-        }
-
-        console.debug('Trie size after action', localStorage.getTrieSize());
     };
 
-    const undoLastAction = async () => {
-        console.log('=== UNDO BUTTON PRESSED ===');
-        console.log('Swiper ref exists:', !!swiperRef.current);
-        console.log('Local storage exists:', !!localStorage);
-        
-        if (!swiperRef.current || !localStorage) {
-            console.error('Swiper ref or local storage not available');
-            return;
-        }
-
-        const historySize = localStorage.getActionHistorySize();
-        console.log('Action history size:', historySize);
-        
-        if (historySize === 0) {
-            console.log('No actions to undo');
-            return;
-        }
-
-        try {
-            // Disable undo button during operation
-            setEnableUndo(false);
-            
-            // Get the last action from history
-            console.log('Getting last action from history...');
-            const lastAction = localStorage.popActionHistory();
-            console.log('Last action:', lastAction);
-            
-            if (!lastAction) {
-                console.error('Failed to get last action from history');
-                return;
-            }
-
-            // Ensure the index is within bounds
-            const safeIndex = Math.min(lastAction.index, mediaAssets.length - 1);
-            console.debug('Undoing action:', lastAction.action, 'at safe index:', safeIndex);
-
-            // Update the current index and asset
-            console.log('Updating current index to:', safeIndex);
-            const assetToRestore = mediaAssets[safeIndex] || lastAction;
-            console.log('Updating current asset to:', assetToRestore);
-            
-            setCurrentIndex(safeIndex);
-            setCurrentAsset(assetToRestore);
-            localStorage.setCurrentIndex(safeIndex);
-
-            // Remove from the appropriate trie
-            if (lastAction.action === SwipeActionType.DELETE) {
-                setToDeleteAssets(prev => prev.filter(a => a.uri !== lastAction.uri));
-                localStorage.delete(lastAction.uri);
-            } else if (lastAction.action === SwipeActionType.KEEP) {
-                localStorage.incrementKeptCount(-1);
-                localStorage.delete(lastAction.uri);
-            } else if (lastAction.action === SwipeActionType.SKIP) {
-                localStorage.incrementSkipCount(-1);
-                localStorage.delete(lastAction.uri);
-            }
-
-            // Update the UI to show the card again
-            console.log('Jumping to card index:', safeIndex);
-            try {
-                await swiperRef.current.jumpToCardIndex(safeIndex);
-                console.log('Successfully jumped to card');
-            } catch (error) {
-                console.error('Error jumping to card:', error);
-            }
-            
-            // Check if there are more actions to undo
-            const remainingActions = localStorage.getActionHistorySize();
-            console.log('Remaining actions after undo:', remainingActions);
-            
-            // Enable undo button if there are more actions to undo
-            const shouldEnableUndo = remainingActions > 0;
-            console.log('Should enable undo:', shouldEnableUndo);
-            
-            setEnableUndo(shouldEnableUndo);
-            if (!shouldEnableUndo) {
-                console.log('No more actions to undo');
-            }
-        } catch (error) {
-            console.error('Error undoing last action:', error);
-            // Make sure to re-enable the button on error
-            setEnableUndo(localStorage.getActionHistorySize() > 0);
-        }
-    };
-
-    const proceedToDelete = async () => {
-        setIsLoading(true);
-        try {
-            console.log('Assets marked for deletion:', toDeleteAssets.length);
-
-            await deleteAssets(toDeleteAssets);
-            toDeleteAssets.forEach((item) => {
-                console.log('Will delete:', item);
-            });
-        } catch (error) {
-            console.error('Error deleting assets:', error);
-        } finally {
-            setIsLoading(false);
-        }
-    };
-    const overlayLabel = useMemo(() => {
-        const overlayStyle = {
-            width: '100%',
-            height: '100%',
-            borderRadius: 48,
-            justifyContent: 'center',
-            alignItems: 'center',
-            backgroundColor: 'green',
-            color: 'white',
-            fontSize: 24,
-        };
-
-        return {
-            left: {
-                title: 'Delete',
-                style: {
-                    ...overlayStyle,
-                    label: {
-                        color: 'red',
-                    },
-                },
-            },
-            right: {
-                // center it with background green
-                title: 'Keep',
-                style: {
-                    ...overlayStyle,
-                    label: {
-                        color: 'green',
-                    },
-                },
-            },
-        };
-
-        // return (
-        //     <View style={[styles.overlayLabelContainer, { backgroundColor }]}>
-        //         <Text style={styles.overlayLabelText}>{text}</Text>
-        //     </View>
-        // );
+    const openViewer = useCallback((item: AssetType) => {
+        router.push({
+            pathname: '/viewer',
+            params: { uri: item.uri, mediaType: item.mediaType },
+        });
     }, []);
 
-    const renderCard = useCallback(
-        (item: AssetType, index: number) => {
-            // Check if this is the dummy 'No more media' card
-            if (item.uri === 'DUMMY_NO_MORE_MEDIA') {
-                return (
-                    <View className="flex-1 bg-gray-100 rounded-3xl justify-center items-center p-6">
-                        <Text className="text-xl font-bold text-gray-700 mb-2">No More Media</Text>
-                        <Text className="text-gray-500 text-center">You've gone through all your media</Text>
-                    </View>
-                );
-            }
-            return (
-                <SwipeCard
-                    item={item}
-                    index={index}
-                    totalCount={mediaAssets.length}
-                />
-            );
-        },
-        [mediaAssets.length]
+    const overlayLabels = useMemo(
+        () => ({
+            // Labels sit on the opposite corner from the drag direction
+            left: {
+                element: <Stamp text="DELETE" color={colors.danger} />,
+                style: { wrapper: labelWrapper('flex-end', 'flex-start') },
+            },
+            right: {
+                element: <Stamp text="KEEP" color={colors.success} />,
+                style: { wrapper: labelWrapper('flex-start', 'flex-start') },
+            },
+            top: {
+                element: <Stamp text="SKIP" color={colors.primary} />,
+                style: { wrapper: labelWrapper('center', 'center') },
+            },
+        }),
+        [colors.danger, colors.success, colors.primary]
     );
 
-    // Add a dummy card at the end of the media assets array
-    const cardsWithDummy = useMemo(() => {
-        const dummyCard: AssetType = {
+    const cards = useMemo(() => {
+        const endCard: AssetType = {
+            id: END_CARD_URI,
             index: mediaAssets.length,
-            uri: 'DUMMY_NO_MORE_MEDIA',
-            albumId: '',
-            creationTime: Date.now(),
+            uri: END_CARD_URI,
+            albumId: undefined,
+            creationTime: 0,
             assetSize: 0,
             width: 0,
             height: 0,
-            filename: 'no-more-media',
-            mediaType: 'text/plain',
-            location: undefined,
+            filename: '',
+            mediaType: '',
         };
-        return [...mediaAssets, dummyCard];
+        return [...mediaAssets, endCard];
     }, [mediaAssets]);
 
-    if (isLoading) {
+    const renderCard = (item: AssetType | undefined, index: number) => {
+        // The end-of-deck summary is drawn over the deck, so this is a spacer
+        if (!item || item.uri === END_CARD_URI) return <View />;
         return (
-            <View style={styles.container}>
-                <ActivityIndicator size="large" color="blue" />
-            </View>
+            <SwipeCard
+                item={item}
+                index={index}
+                totalCount={mediaAssets.length}
+                isActive={isFocused && index === currentIndex}
+                onOpen={openViewer}
+            />
         );
-    }
+    };
 
-    if (mediaAssets.length === 0) {
+    const onAreaLayout = (e: LayoutChangeEvent) => {
+        const { width, height } = e.nativeEvent.layout;
+        setArea((prev) =>
+            prev && prev.width === width && prev.height === height
+                ? prev
+                : { width, height }
+        );
+    };
+
+    if (loadError) {
         return (
-            <View style={styles.container}>
-                <Text>No media found in your gallery.</Text>
-            </View>
-        );
-    }
-
-    // Confirmation screen component
-    const renderConfirmation = () => (
-        <View className="absolute inset-0 bg-black/70 z-50 justify-center items-center p-6">
-            <View className="bg-white rounded-2xl p-6 w-full max-w-sm">
-                <Text className="text-xl font-bold text-center mb-4">All Done!</Text>
-                <Text className="text-gray-700 text-center mb-6">
-                    You've reviewed all your media. Would you like to proceed with the selected actions?
+            <View className="flex-1 items-center justify-center px-6">
+                <Text className="text-center font-rubik text-muted">
+                    Couldn't load your progress.
                 </Text>
-                <View className="flex-row justify-between space-x-4">
-                    <TouchableOpacity 
-                        className="flex-1 bg-gray-200 py-3 rounded-lg items-center"
-                        onPress={handleReviewAgain}
-                    >
-                        <Text className="text-gray-800 font-medium">Review Again</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity 
-                        className="flex-1 bg-blue-500 py-3 rounded-lg items-center"
-                        onPress={proceedToDelete}
-                    >
-                        <Text className="text-white font-medium">Proceed</Text>
-                    </TouchableOpacity>
-                </View>
             </View>
-        </View>
-    );
+        );
+    }
+
+    if (!session) {
+        return <Spinner />;
+    }
+
+    const controlsDisabled = isAtEnd;
 
     return (
         <View className="flex-1">
-            {showConfirmation && renderConfirmation()}
-            <View className="flex-1 bg-transparent z-10">
-                <Swiper
-                    ref={swiperRef}
-                    containerStyle={{
-                        backgroundColor: 'transparent',
-                    }}
-                    cards={cardsWithDummy}
-                    stackSize={Math.min(2, mediaAssets.length)}
-                    cardIndex={currentIndex}
-                    onSwipedAll={() => {
-                        // Handle when all cards are swiped
-                        console.log('All cards have been swiped');
-                    }}
-                    disableTopSwipe
-                    disableBottomSwipe
-                    onSwipedLeft={() => {
-                        const safeIndex = Math.min(currentIndex, mediaAssets.length - 1);
-                        const asset = mediaAssets[safeIndex];
-                        if (!asset) return;
-                        handleAction(
-                            SwipeActionType.DELETE,
-                            asset,
-                            safeIndex
-                        );
-                    }}
-                    onSwipedRight={() => {
-                        const safeIndex = Math.min(currentIndex, mediaAssets.length - 1);
-                        const asset = mediaAssets[safeIndex];
-                        if (!asset) return;
-                        handleAction(
-                            SwipeActionType.KEEP,
-                            asset,
-                            safeIndex
-                        );
-                    }}
-                    keyExtractor={(item: AssetType) => {
-                        // Use a combination of uri and a random number to ensure uniqueness
-                        if (!item) return `item_${Math.random().toString(36).substr(2, 9)}`;
-                        return item.uri || `item_${Math.random().toString(36).substr(2, 9)}`;
-                    }}
-                    swipeBackCard={true}
-                    animateCardOpacity={true}
-                    swipeAnimationDuration={100}
-                    animateOverlayLabelsOpacity={true}
-                    overlayLabels={overlayLabel}
-                    overlayLabelWrapperStyle={styles.overlayLabelContainer}
-                    renderCard={(item: AssetType, index: number) => {
-                        if (!item) return null; // Don't render empty cards
-                        return renderCard(item, index);
-                    }}
-                    stackAnimationFriction={15}
-                    stackAnimationTension={80}
-                />
+            <ProgressHeader reviewed={reviewed} total={mediaAssets.length} />
+            <View className="flex-1" onLayout={onAreaLayout}>
+                {area && (
+                    <Swiper
+                        key={deckId}
+                        ref={swiperRef}
+                        containerStyle={{ backgroundColor: 'transparent' }}
+                        cardStyle={{
+                            top: CARD_MARGIN_TOP,
+                            left: CARD_MARGIN_X,
+                            width: area.width - CARD_MARGIN_X * 2,
+                            height:
+                                area.height -
+                                CARD_MARGIN_TOP -
+                                CARD_MARGIN_BOTTOM,
+                        }}
+                        cards={cards}
+                        cardIndex={startIndex}
+                        stackSize={Math.min(2, cards.length)}
+                        disableBottomSwipe
+                        disableTopSwipe={isAtEnd}
+                        disableLeftSwipe={isAtEnd}
+                        disableRightSwipe={isAtEnd}
+                        onSwipedLeft={(cardIndex) =>
+                            handleSwiped(SwipeActionType.DELETE, cardIndex)
+                        }
+                        onSwipedRight={(cardIndex) =>
+                            handleSwiped(SwipeActionType.KEEP, cardIndex)
+                        }
+                        onSwipedTop={(cardIndex) =>
+                            handleSwiped(SwipeActionType.SKIP, cardIndex)
+                        }
+                        // Fires after every completed swipe and swipe-back
+                        onSwiped={endAnimation}
+                        onSwiping={(x: number, y: number) => {
+                            lastDrag.current = { x, y };
+                        }}
+                        onSwipedAborted={() => {
+                            lastDrag.current = null;
+                            endAnimation();
+                        }}
+                        keyExtractor={(item: AssetType) => item.uri}
+                        swipeBackCard
+                        animateCardOpacity
+                        swipeAnimationDuration={100}
+                        animateOverlayLabelsOpacity
+                        overlayLabels={overlayLabels}
+                        renderCard={renderCard}
+                        stackAnimationFriction={15}
+                        stackAnimationTension={80}
+                    />
+                )}
+                {isAtEnd && area && (
+                    <View
+                        className="absolute"
+                        style={{
+                            top: CARD_MARGIN_TOP,
+                            left: CARD_MARGIN_X,
+                            width: area.width - CARD_MARGIN_X * 2,
+                            height:
+                                area.height -
+                                CARD_MARGIN_TOP -
+                                CARD_MARGIN_BOTTOM,
+                        }}
+                    >
+                        <EndSummary
+                            kept={keepCount}
+                            skipped={skipCount}
+                            marked={pendingDeletes.length}
+                            onReview={openReview}
+                            onStartOver={startOver}
+                        />
+                    </View>
+                )}
             </View>
-            <View className="h-1/3 flex flex-row items-center justify-around z-50">
-                <TouchableOpacity
-                    style={[shadow3d, currentIndex >= mediaAssets.length && { opacity: 0.5 }]}
-                    className={`h-20 w-20 rounded-full bg-gray-50 flex justify-center items-center border border-gray-100 ${currentIndex >= mediaAssets.length ? 'opacity-50' : ''}`}
-                    onPress={() => {
-                        if (currentIndex < mediaAssets.length) {
-                            swiperRef.current?.swipeLeft();
-                        }
-                    }}
-                    disabled={currentIndex >= mediaAssets.length || showConfirmation}
-                >
-                    <MaterialCommunityIcons
-                        name="delete"
-                        color={currentIndex >= mediaAssets.length || showConfirmation ? '#9ca3af' : 'red'}
-                        size={25}
+            <View style={{ paddingBottom: Math.max(insets.bottom, 12) }}>
+                {pendingDeletes.length > 0 && (
+                    <View className="mb-3">
+                        <ReviewPill
+                            count={pendingDeletes.length}
+                            onPress={openReview}
+                            disabled={false}
+                        />
+                    </View>
+                )}
+                <View className="flex-row items-start justify-evenly px-2">
+                    <ActionButton
+                        label="Undo"
+                        icon="undo"
+                        tone="muted"
+                        size={52}
+                        disabled={!canUndo}
+                        onPress={undoLastAction}
                     />
-                </TouchableOpacity>
-                <TouchableOpacity
-                    style={[shadow3d, { borderColor: enableUndo ? '#3b82f6' : '#9ca3af' }]}
-                    className={`h-20 w-20 rounded-full bg-gray-50 flex justify-center items-center border ${!enableUndo ? 'opacity-50' : ''}`}
-                    onPress={() => {
-                        if (enableUndo) {
-                            console.log('Undo button pressed');
-                            console.log('enableUndo:', enableUndo);
-                            console.log('hasHistory:', hasHistory);
-                            console.log('actionHistorySize:', localStorage?.getActionHistorySize());
-                            undoLastAction();
-                        }
-                    }}
-                    disabled={!enableUndo}
-                >
-                    <MaterialCommunityIcons
-                        name="undo"
-                        color={enableUndo ? '#3b82f6' : '#9ca3af'}
-                        size={25}
+                    <ActionButton
+                        label="Delete"
+                        icon="delete"
+                        tone="danger"
+                        disabled={controlsDisabled}
+                        onPress={() => swipeWithButton('left')}
                     />
-                </TouchableOpacity>
-                <TouchableOpacity
-                    style={shadow3d}
-                    onPress={proceedToDelete}
-                    className="h-20 w-20 rounded-full bg-gray-50 flex justify-center items-center border border-gray-100"
-                >
-                    <MaterialIcons name="done-all" color={'blue'} size={25} />
-                </TouchableOpacity>
-                <TouchableOpacity
-                    style={[shadow3d, currentIndex >= mediaAssets.length && { opacity: 0.5 }]}
-                    className={`h-20 w-20 rounded-full bg-gray-50 flex justify-center items-center border border-gray-100 ${currentIndex >= mediaAssets.length ? 'opacity-50' : ''}`}
-                    onPress={() => {
-                        if (currentIndex < mediaAssets.length) {
-                            swiperRef.current?.swipeRight();
-                        }
-                    }}
-                    disabled={currentIndex >= mediaAssets.length || showConfirmation}
-                >
-                    <MaterialCommunityIcons
-                        name="check"
-                        color={currentIndex >= mediaAssets.length || showConfirmation ? '#9ca3af' : 'green'}
-                        size={25}
+                    <ActionButton
+                        label="Skip"
+                        icon="skip-next"
+                        tone="primary"
+                        size={52}
+                        disabled={controlsDisabled}
+                        onPress={() => swipeWithButton('top')}
                     />
-                </TouchableOpacity>
+                    <ActionButton
+                        label="Keep"
+                        icon="check"
+                        tone="success"
+                        disabled={controlsDisabled}
+                        onPress={() => swipeWithButton('right')}
+                    />
+                </View>
             </View>
         </View>
     );

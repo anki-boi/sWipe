@@ -1,28 +1,27 @@
 import * as FileSystem from 'expo-file-system';
 
-export async function getAssetSize(assetUri: string) {
+// Size in bytes, or null if the file doesn't exist (e.g. it was deleted
+// elsewhere). If the size can't be read, returns 0 rather than null so the
+// file isn't mistaken for a missing one.
+export async function getAssetSize(assetUri: string): Promise<number | null> {
     try {
         const fileInfo = await FileSystem.getInfoAsync(assetUri);
-        if (fileInfo.exists) {
-            console.debug(`File size: ${fileInfo.size} bytes`);
-            return fileInfo.size;
-        } else {
-            console.debug('File does not exist.');
-            return null;
-        }
+        return fileInfo.exists ? fileInfo.size : null;
     } catch (error) {
         console.error('Error retrieving file info:', error);
-        return null;
+        return 0;
     }
 }
 
-export async function getAssetsSize(assetUris: string[]) {
-    let totalSize = 0;
-    for (const assetUri of assetUris) {
-        const size = await getAssetSize(assetUri);
-        if (size !== null) {
-            totalSize += size;
-        }
+const ASSET_SIZE_CHUNK = 50;
+
+export async function getAssetSizes(
+    assetUris: string[]
+): Promise<(number | null)[]> {
+    const sizes: (number | null)[] = [];
+    for (let i = 0; i < assetUris.length; i += ASSET_SIZE_CHUNK) {
+        const chunk = assetUris.slice(i, i + ASSET_SIZE_CHUNK);
+        sizes.push(...(await Promise.all(chunk.map(getAssetSize))));
     }
-    return totalSize;
+    return sizes;
 }

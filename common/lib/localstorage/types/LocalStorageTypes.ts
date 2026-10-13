@@ -1,52 +1,44 @@
-import {
-    ActionHistoryType,
-    SwipeActionType,
-} from '../../../types/SwipeMediaTypes';
-
-export interface LocalStorageMediaDataType {
-    name: string;
-    currentIndex: number;
-    lastAccessed: number;
-    keepCount: number;
-    skipCount: number;
-    deleteCount: number;
-    deletedMediaSize: number;
-    initalCount: number;
-    ExternalActionStackSize: number;
-}
-
-export interface ActionHistory {
-    name: string;
-    actionHistory: ActionHistoryType[];
-}
-
-export interface LocationType {
-    longitude: number;
-    latitude: number;
-}
+import { SwipeActionType } from '@/common/types/SwipeMediaTypes';
 
 export interface AssetType {
-    location: LocationType | undefined;
-    mediaType: string;
-    width: any;
-    height: any;
-    filename: string;
+    id: string;
     index: number;
     uri: string;
     albumId: string | undefined;
     creationTime: number;
+    // Size in bytes; 0 until it has been looked up (sizes are fetched lazily)
     assetSize: number;
+    width: number;
+    height: number;
+    filename: string;
+    mediaType: string;
 }
 
-export interface ExternalActionStackEntry {
-    assetUri: string;
-    assetSize: number;
+export interface ActionHistoryEntry {
+    uri: string;
     action: SwipeActionType;
-    albumId: string | undefined;
-    creationTime: number;
+    // Decision the item had before this action (when swiped again after
+    // "Start over"); undo restores it
+    previous?: SwipeActionType;
 }
 
-export interface ExternalActionStackType {
+// Persisted per-screen swipe decisions, stored separately from the metadata so
+// list screens can read progress without loading every decision.
+export interface SwipeSessionData {
+    version: 2;
+    decisions: Record<string, SwipeActionType>;
+    history: ActionHistoryEntry[];
+}
+
+export interface SwipeMetadataData {
+    version: 2;
     name: string;
-    queue: ExternalActionStackEntry[];
+    type: string;
+    lastAccessed: number;
+    totalCount: number;
+    keepCount: number;
+    skipCount: number;
+    pendingDeleteCount: number;
+    deleteCount: number;
+    deletedMediaSize: number;
 }

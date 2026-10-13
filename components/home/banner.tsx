@@ -3,96 +3,122 @@ import React, { useCallback, useState } from 'react';
 import { LinearGradient } from 'expo-linear-gradient';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect, useRouter } from 'expo-router';
-import { Svg, Circle } from 'react-native-svg';
 import * as FileSystem from 'expo-file-system';
 import { getMediaSizeByCategory } from '@/common/lib/swipeandroid/SwipeAndroidLibary';
+import { bytesToHumanReadable } from '@/util/MediaUtil';
+import { useTheme } from '@/hooks/useTheme';
+import { CircularProgress } from '@/components/progress-list';
 
-const PieChart = ({ percentage }: { percentage: number }) => {
-    const radius = 40;
-    const circumference = 2 * Math.PI * radius;
-    const strokeDashoffset = circumference - (percentage / 100) * circumference;
+const Stat = ({ value, label }: { value: string; label: string }) => (
+    <View className="flex-1">
+        <Text
+            className="text-on-primary text-2xl font-rubik-bold"
+            numberOfLines={1}
+            adjustsFontSizeToFit
+        >
+            {value}
+        </Text>
+        <Text className="text-on-primary/80 text-sm font-rubik">{label}</Text>
+    </View>
+);
 
-    return (
-        <View className="relative left-2 top-2">
-            <Svg height="100" width="100" viewBox="0 0 100 100">
-                <Circle
-                    cx="50"
-                    cy="50"
-                    r="40"
-                    stroke="#1e3a8a"
-                    strokeWidth="10"
-                    fill="transparent"
-                />
-                <Circle
-                    cx="50"
-                    cy="50"
-                    r={radius}
-                    stroke="#ffffff"
-                    strokeWidth="10"
-                    fill="transparent"
-                    strokeDasharray={circumference}
-                    strokeDashoffset={strokeDashoffset}
-                    strokeLinecap="round"
-                />
-            </Svg>
-            <View className="absolute inset-0 flex justify-center items-center">
-                <Text className="text-white font-bold text-lg">
-                    {percentage}%
-                </Text>
-            </View>
-        </View>
-    );
-};
-
-export const Banner = () => {
+export const Banner = ({
+    freedBytes,
+    deletedCount,
+}: {
+    freedBytes: number;
+    deletedCount: number;
+}) => {
     const router = useRouter();
+    const { colors } = useTheme();
     const [percentage, setPercentage] = useState<number>(0);
 
     useFocusEffect(
         useCallback(() => {
+            let active = true;
             const fetchData = async () => {
-                const totalStorageUsedByCategory =
-                    await getMediaSizeByCategory();
-                const totalStorageUsed =
-                    totalStorageUsedByCategory.images +
-                    totalStorageUsedByCategory.videos +
-                    totalStorageUsedByCategory.audio +
-                    totalStorageUsedByCategory.gifs;
-                const totalDeviceStorage =
-                    await FileSystem.getTotalDiskCapacityAsync();
-                setPercentage((totalStorageUsed / totalDeviceStorage) * 100);
+                try {
+                    const totalStorageUsedByCategory =
+                        await getMediaSizeByCategory();
+                    const totalStorageUsed =
+                        totalStorageUsedByCategory.images +
+                        totalStorageUsedByCategory.videos +
+                        totalStorageUsedByCategory.audio +
+                        totalStorageUsedByCategory.gifs;
+                    const totalDeviceStorage =
+                        await FileSystem.getTotalDiskCapacityAsync();
+                    if (active && totalDeviceStorage > 0) {
+                        setPercentage(
+                            (totalStorageUsed / totalDeviceStorage) * 100
+                        );
+                    }
+                } catch (error) {
+                    console.error('Failed to load storage usage:', error);
+                }
             };
             fetchData();
+            return () => {
+                active = false;
+            };
         }, [])
     );
 
+    const rounded = Number(percentage.toFixed(1));
+
     return (
         <LinearGradient
-            colors={['#2563eb', '#1e3a8a']}
-            className="h-56 w-[92%] mx-auto rounded-2xl relative overflow-hidden shadow-xl flex justify-center items-center p-6"
+            colors={[colors.primary, colors.primaryStrong]}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+            style={{ borderRadius: 24 }}
+            className="mx-5 mt-2 overflow-hidden p-5"
         >
-            <View className="flex flex-row justify-start items-center w-full h-full gap-x-8 ml-8 ">
-                <PieChart percentage={Number(percentage.toFixed(2))} />
-
-                <Text className="text-gray-100 text-lg font-medium  ">
-                    Storage Used
-                </Text>
+            <View className="flex-row items-center gap-5">
+                <View className="items-center justify-center">
+                    <CircularProgress
+                        progress={percentage / 100}
+                        size={92}
+                        strokeWidth={9}
+                        color={colors.onPrimary}
+                        trackColor={colors.primaryStrong}
+                    />
+                    <View className="absolute inset-0 items-center justify-center">
+                        <Text className="text-on-primary font-rubik-bold text-lg">
+                            {rounded}%
+                        </Text>
+                    </View>
+                </View>
+                <View className="flex-1 gap-4">
+                    <Stat
+                        value={bytesToHumanReadable(freedBytes)}
+                        label="space freed"
+                    />
+                    <Stat
+                        value={deletedCount.toLocaleString()}
+                        label="items deleted"
+                    />
+                </View>
             </View>
-
-            <TouchableOpacity
-                className="absolute bottom-5 right-5 flex flex-row items-center bg-white/30 px-4 py-2 rounded-full backdrop-blur-lg shadow-md"
-                onPress={() => router.push('/(root)/stats')}
-            >
-                <Text className="text-white text-base font-semibold">
-                    View Stats
+            <View className="mt-4 flex-row items-center justify-between">
+                <Text className="text-on-primary/80 text-sm font-rubik flex-1 pr-3">
+                    {rounded}% of storage used by photos & videos
                 </Text>
-                <MaterialIcons
-                    name="chevron-right"
-                    color="white"
-                    size={22}
-                    className="ml-2"
-                />
-            </TouchableOpacity>
+                <TouchableOpacity
+                    className="flex-row items-center rounded-full bg-on-primary/20 py-2 pl-4 pr-2"
+                    onPress={() => router.push('/stats')}
+                    accessibilityRole="button"
+                    accessibilityLabel="View stats"
+                >
+                    <Text className="text-on-primary font-rubik-medium">
+                        View stats
+                    </Text>
+                    <MaterialIcons
+                        name="chevron-right"
+                        color={colors.onPrimary}
+                        size={20}
+                    />
+                </TouchableOpacity>
+            </View>
         </LinearGradient>
     );
 };

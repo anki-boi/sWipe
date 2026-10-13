@@ -1,136 +1,130 @@
-import { View, Text, FlatList, Image, ImageSourcePropType } from 'react-native';
-import React, { useCallback, useEffect, useState } from 'react';
-import images from '@/constants/images';
-import {
-    MediaListDataType,
-    SwipeScreenKeyType,
-} from '@/common/types/SwipeMediaTypes';
-import LocalStorageStore from '@/common/lib/localstorage/LocalStorageStore';
-import { useFocusEffect } from 'expo-router';
-import { isMonthKey } from '@/util/StringUtil';
+import { View, Text, FlatList, Pressable } from 'react-native';
+import React, { useCallback, useState } from 'react';
+import { useFocusEffect, useRouter } from 'expo-router';
+import { MaterialIcons } from '@expo/vector-icons';
+import { SwipeScreenKeyType } from '@/common/types/SwipeMediaTypes';
+import { getAllMetadata } from '@/common/lib/localstorage/SwipeStore';
+import SwipeMetadata from '@/common/lib/localstorage/lib/SwipeMetadata';
+import { getScreenTitle, getSmartFilter } from '@/common/lib/filters';
+import { bytesToHumanReadable } from '@/util/MediaUtil';
+import { convertDateToRelativeTimeString } from '@/util/DateUtil';
+import { Title } from '../common/title';
+import { useTheme } from '@/hooks/useTheme';
+
+const iconFor = (item: SwipeMetadata) => {
+    switch (item.type) {
+        case SwipeScreenKeyType.MONTH:
+            return 'calendar-month';
+        case SwipeScreenKeyType.ALBUM:
+            return 'perm-media';
+        default:
+            return getSmartFilter(item.name)?.icon ?? 'filter-list';
+    }
+};
 
 const MonthList = () => {
-    const [monthListData, setMonthListData] = useState<MediaListDataType[]>([]);
-
-    // want use effect to be triggered when refresh state changes changes (static LocalStorageStore.getRefreshState())
+    const router = useRouter();
+    const { colors } = useTheme();
+    const [items, setItems] = useState<SwipeMetadata[] | null>(null);
 
     useFocusEffect(
         useCallback(() => {
-            const fetchData = async () => {
-                // from async storage get all keys
-                const localStorageKeys = await LocalStorageStore.getAllKeys();
-                console.debug('localStorageKeys:', localStorageKeys);
-                const data: MediaListDataType[] = (
-                    await Promise.all(
-                        localStorageKeys.map(async (key) => {
-                            // load action trie for key
-                            const metadata =
-                                await LocalStorageStore.getMetadataOnly(
-                                    key,
-                                    isMonthKey(key) // TODO: deprecate this, this is wrong way to get type
-                                        ? SwipeScreenKeyType.MONTH
-                                        : SwipeScreenKeyType.ALBUM
-                                );
-                            if (!metadata) {
-                                console.error(
-                                    'No metadata found for key:',
-                                    key
-                                );
-                                throw Error(
-                                    `No metadata found for key: ${key}`
-                                );
-                            }
-
-                            if (
-                                !metadata.getIsActive() &&
-                                metadata.getProgress() === 0
-                            ) {
-                                return null;
-                            }
-
-                            // convert bytes to mb
-                            const totalSize =
-                                metadata.getDeletedMediaSize() / (1024 * 1024);
-                            return {
-                                name: key,
-                                type: SwipeScreenKeyType.MONTH,
-                                progress: metadata.getProgress(),
-                                dateObj: new Date(metadata.getLastAccessed()), // for sorting
-                                itemCount: metadata.getDeletedCount(), // assuming count exists in MediaData
-                                totalSize,
-                                thumbnail: images.newYork,
-                            };
-                        })
+            let active = true;
+            getAllMetadata().then((metadata) => {
+                const history = [...metadata.values()]
+                    .filter(
+                        (item) => item.lastAccessed > 0 || item.deleteCount > 0
                     )
-                ).filter((item) => item !== null);
-
-                setMonthListData(data);
+                    .sort((a, b) => b.lastAccessed - a.lastAccessed);
+                if (active) setItems(history);
+            });
+            return () => {
+                active = false;
             };
-
-            fetchData();
-            console.debug('time line use focus effect called');
         }, [])
     );
 
-    const renderItem = ({ item }: { item: MediaListDataType }) => {
-        const isInProgress = item.progress < 1;
-
+    const renderItem = ({ item }: { item: SwipeMetadata }) => {
+        const progress = item.getProgress();
+        const done = progress >= 1;
         return (
-            <View
-                className={`p-4 m-2 rounded-2xl shadow-md flex-row items-center ${
-                    isInProgress
-                        ? 'bg-blue-600'
-                        : 'bg-white border border-blue-300'
-                }`}
+            <Pressable
+                onPress={() =>
+                    router.push({
+                        pathname: '/[screenKeyType]/[screenKey]',
+                        params: {
+                            screenKeyType: item.type,
+                            screenKey: item.name,
+                        },
+                    })
+                }
+                accessibilityRole="button"
+                className="mx-5 my-1.5 p-4 rounded-2xl bg-card border border-border flex-row items-center gap-4 active:opacity-80"
             >
-                {/* Thumbnail Image */}
-                {/* <Image
-                    // source={item.thumbnail}
-                    className="w-14 h-14 rounded-lg mr-4"
-                /> */}
-
-                {/* Text Info */}
-                <View className="flex-1">
-                    <Text
-                        className={`text-lg font-semibold ${isInProgress ? 'text-white' : 'text-blue-600'}`}
-                    >
-                        {item.name}
-                    </Text>
-                    <Text
-                        className={`text-sm ${isInProgress ? 'text-blue-200' : 'text-blue-400'}`}
-                    >
-                        {item.itemCount} items cleaned
-                    </Text>
-                    <Text
-                        className={`text-xs ${isInProgress ? 'text-blue-100' : 'text-blue-600'}`}
-                    >
-                        {item.totalSize.toFixed(2)} MB freed
-                    </Text>
+                <View
+                    className={`h-12 w-12 rounded-xl items-center justify-center ${done ? 'bg-success/15' : 'bg-primary/10'}`}
+                >
+                    <MaterialIcons
+                        name={done ? 'check' : iconFor(item)}
+                        size={24}
+                        color={done ? colors.success : colors.primary}
+                    />
                 </View>
-
-                {/* In Progress Badge (Only shows if true) */}
-                {isInProgress && (
-                    <Text className="px-3 py-1 text-xs font-bold text-blue-600 bg-white rounded-full">
-                        In Progress
+                <View className="flex-1 gap-0.5">
+                    <Text
+                        className="text-lg font-rubik-medium text-foreground"
+                        numberOfLines={1}
+                    >
+                        {getScreenTitle(item.type, item.name)}
+                    </Text>
+                    <Text className="text-sm font-rubik text-muted">
+                        {item.deleteCount} deleted ·{' '}
+                        {bytesToHumanReadable(item.deletedMediaSize)} freed
+                    </Text>
+                    {item.lastAccessed > 0 && (
+                        <Text className="text-xs font-rubik text-muted">
+                            {convertDateToRelativeTimeString(
+                                new Date(item.lastAccessed)
+                            )}
+                        </Text>
+                    )}
+                </View>
+                {!done && progress > 0 && (
+                    <Text className="px-3 py-1 text-xs font-rubik-semibold text-primary bg-primary/10 rounded-full">
+                        {Math.round(progress * 100)}%
                     </Text>
                 )}
-            </View>
+            </Pressable>
         );
     };
+
     return (
-        <View>
-            <FlatList
-                data={monthListData}
-                renderItem={renderItem}
-                keyExtractor={(_, index) => index.toString()}
-                contentContainerStyle={{ paddingBottom: 20 }}
-                ListEmptyComponent={
-                    <Text className="text-center text-gray-400 mt-6 ">
-                        Nothing here, Click a pic or two!
-                    </Text>
-                }
-            />
-        </View>
+        <FlatList
+            data={items ?? []}
+            renderItem={renderItem}
+            keyExtractor={(item) => item.key}
+            contentContainerStyle={{ paddingBottom: 120 }}
+            ListHeaderComponent={
+                <View className="px-5 pt-6 pb-3">
+                    <Title text="Timeline" subtitle="Your cleanup history" />
+                </View>
+            }
+            ListEmptyComponent={
+                items === null ? null : (
+                    <View className="items-center mt-12 px-8 gap-3">
+                        <MaterialIcons
+                            name="history"
+                            size={48}
+                            color={colors.muted}
+                        />
+                        <Text className="text-center text-muted font-rubik">
+                            Nothing here yet. Start swiping through a month,
+                            album or smart filter!
+                        </Text>
+                    </View>
+                )
+            }
+        />
     );
 };
 
