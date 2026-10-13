@@ -1,4 +1,5 @@
-import { NativeModules } from 'react-native';
+import { NativeModules, Platform } from 'react-native';
+import * as MediaLibrary from 'expo-media-library';
 import { sortMediaData } from '../../../util/MediaUtil';
 import { AlbumMediaData, MediaData } from '@/common/types/SwipeMediaTypes';
 import { MediaSizeByCategory } from './types/SwipeAndroidLibraryTypes';
@@ -50,27 +51,59 @@ export async function getImageCountByMonthYear(): Promise<MediaData[]> {
     return [];
 }
 
-export async function deleteMedia(deleteUris: string[]) {
-    const result = await SwipeCustomMediaModule.deletePhotos(deleteUris)
-        .then(() => {
-            // resolve true promise
-            return Promise.resolve(true);
-        })
-        .catch((e: { message: any; code: any }) => {
-            const message = e.message;
-            const code = e.code;
+export type DeleteResult =
+    | { status: 'deleted' }
+    | { status: 'cancelled' }
+    | { status: 'failed'; message: string };
 
-            switch (code) {
-                case 'ERROR_USER_REJECTED':
-                    console.log('Image deletion denied by user');
-                    break;
-                default:
-                    console.log('Error Deleting Media:', message);
-                    break;
-            }
-            return Promise.resolve(false);
-        });
-    return result;
+// Android 11+ shows its own system confirmation dialog for media deletes.
+// Older versions delete immediately, so the caller must confirm first.
+export const deleteNeedsInAppConfirmation = () =>
+    Platform.OS !== 'android' || Number(Platform.Version) < 30;
+
+const DELETE_ERROR_MESSAGES: Record<string, string> = {
+    ERROR_UNRESOLVED_MEDIA:
+        'Some items could not be found on the device. They may have been moved or deleted already.',
+    ERROR_DELETE_IN_PROGRESS: 'Another delete is already in progress.',
+};
+
+/**
+ * Deletes the given media files. On Android 11+ the system asks the user to
+ * confirm; on older versions the files are deleted directly.
+ */
+export async function deleteMedia(
+    assets: { id: string; uri: string }[]
+): Promise<DeleteResult> {
+    try {
+        if (deleteNeedsInAppConfirmation()) {
+            const deleted = await MediaLibrary.deleteAssetsAsync(
+                assets.map((asset) => asset.id)
+            );
+            return deleted
+                ? { status: 'deleted' }
+                : {
+                      status: 'failed',
+                      message: 'The media could not be deleted.',
+                  };
+        }
+        await SwipeCustomMediaModule.deletePhotos(
+            assets.map((asset) => asset.uri)
+        );
+        return { status: 'deleted' };
+    } catch (e) {
+        const { code, message } = e as { code?: string; message?: string };
+        if (code === 'ERROR_USER_REJECTED') {
+            return { status: 'cancelled' };
+        }
+        console.error(`Error deleting media [${code}]:`, message);
+        return {
+            status: 'failed',
+            message:
+                (code && DELETE_ERROR_MESSAGES[code]) ??
+                message ??
+                'The media could not be deleted.',
+        };
+    }
 }
 
 export async function getMediaSizeByCategory(): Promise<MediaSizeByCategory> {

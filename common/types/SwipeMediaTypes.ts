@@ -1,4 +1,3 @@
-import { Asset } from 'expo-media-library';
 import { AssetType } from '../lib/localstorage/types/LocalStorageTypes';
 
 export interface AlbumMediaData {
@@ -11,30 +10,11 @@ export interface MediaData {
     count: number;
 }
 
-export interface CurrentAssetType {
-    index: number;
-    assetUri: string;
-}
-
-export interface ActionHistoryType extends AssetType {
-    action: SwipeActionType;
-}
-
 export interface SwipeComponentInputType {
     mediaAssets: AssetType[];
     swipeKey: string;
     screenKeyType: SwipeScreenKeyType;
     reloadAssets: () => Promise<void>;
-}
-
-export interface MediaListDataType {
-    name: string;
-    thumbnail: string;
-    itemCount: number;
-    totalSize: number;
-    progress: number;
-    type?: SwipeScreenKeyType;
-    dateObj: Date;
 }
 
 export enum SwipeScreenKeyType {

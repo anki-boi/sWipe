@@ -1,4 +1,4 @@
-import { getMonthNameFromZeroBasedIndex } from './DateUtil';
+import { getMonthNameFromZeroBasedIndex, MONTH_NAMES } from './DateUtil';
 
 export function capitalizeFirstLetter(str: string | null | undefined): string {
     if (!str) {
@@ -7,35 +7,18 @@ export function capitalizeFirstLetter(str: string | null | undefined): string {
     return str.charAt(0).toUpperCase() + str.slice(1).toLowerCase();
 }
 
+// "Month YYYY" in device local time, matching the range getMediaByMonth queries.
 export function getTimeBasedMonthKey(time: number): string {
     const date = new Date(time);
     return `${getMonthNameFromZeroBasedIndex(date.getMonth())} ${date.getFullYear()}`;
 }
 
-const monthNames = [
-    'January',
-    'February',
-    'March',
-    'April',
-    'May',
-    'June',
-    'July',
-    'August',
-    'September',
-    'October',
-    'November',
-    'December',
-];
-// deprecate this function
+// Whether key has the "Month YYYY" form produced by getTimeBasedMonthKey
 export function isMonthKey(key: string): boolean {
-    // check if key is of the form "Month YYYY", where month is a valid month name
     const parts = key.split(' ');
     if (parts.length !== 2) {
         return false;
     }
-    const month = parts[0];
-    const year = parts[1];
-    return (
-        monthNames.includes(month) && year.length === 4 && !isNaN(Number(year))
-    );
+    const [month, year] = parts;
+    return MONTH_NAMES.includes(month) && /^\d{4}$/.test(year);
 }

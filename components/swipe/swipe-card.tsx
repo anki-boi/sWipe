@@ -1,5 +1,7 @@
-import { View, Text, Image, TouchableOpacity } from 'react-native';
+import { View, Text, TouchableOpacity } from 'react-native';
 import React, { useEffect, useState } from 'react';
+import { Image } from 'expo-image';
+import { useVideoPlayer, VideoView } from 'expo-video';
 import { LinearGradient } from 'expo-linear-gradient';
 import { MaterialCommunityIcons, MaterialIcons } from '@expo/vector-icons';
 import Animated, {
@@ -7,22 +9,60 @@ import Animated, {
     useAnimatedStyle,
     withTiming,
 } from 'react-native-reanimated';
-import { ResizeMode, Video } from 'expo-av';
 import { AssetType } from '@/common/lib/localstorage/types/LocalStorageTypes';
 import { bytesToHumanReadable } from '@/util/MediaUtil';
+import { getAssetSize } from '@/util/ExpoFileUtil';
+
+const getFileFormat = (filename?: string) => {
+    if (!filename) return 'Unknown';
+    const parts = filename.split('.');
+    return parts.length > 1 ? parts.pop()?.toUpperCase() : 'Unknown';
+};
+
+// Only the top card plays, so at most one video decoder runs at a time.
+const VideoPreview = ({ uri }: { uri: string }) => {
+    const player = useVideoPlayer(uri, (p) => {
+        p.loop = true;
+        p.muted = true;
+        p.play();
+    });
+    return (
+        <VideoView
+            player={player}
+            style={{ width: '100%', height: '100%' }}
+            contentFit="cover"
+            nativeControls={false}
+        />
+    );
+};
 
 const SwipeCard = React.memo(
-    ({
+    function SwipeCard({
         item,
         index,
         totalCount,
+        isActive,
     }: {
         item: AssetType;
         index: number;
         totalCount: number;
-    }) => {
+        isActive: boolean;
+    }) {
         const fadeAnim = useSharedValue(0);
         const [showMetadata, setShowMetadata] = useState(false);
+        const [size, setSize] = useState<number | null>(item.assetSize || null);
+
+        // Sizes are looked up lazily, only when someone asks to see them
+        useEffect(() => {
+            if (!showMetadata || size !== null) return;
+            let cancelled = false;
+            getAssetSize(item.uri).then((bytes) => {
+                if (!cancelled) setSize(bytes ?? 0);
+            });
+            return () => {
+                cancelled = true;
+            };
+        }, [showMetadata, size, item.uri]);
 
         const toggleMetadata = () => {
             const nextValue = !showMetadata;
@@ -30,68 +70,55 @@ const SwipeCard = React.memo(
             fadeAnim.value = withTiming(nextValue ? 1 : 0, { duration: 300 });
         };
 
-        const animatedStyle = useAnimatedStyle(
-            () => ({
-                opacity: fadeAnim.value,
-            }),
-            []
-        );
+        const animatedStyle = useAnimatedStyle(() => ({
+            opacity: fadeAnim.value,
+        }));
 
-        // Get file format from filename or URI
-        const getFileFormat = (filename?: string) => {
-            if (!filename) return 'Unknown';
-            const parts = filename.split('.');
-            return parts.length > 1 ? parts.pop()?.toUpperCase() : 'Unknown';
-        };
-
-        const fileFormat = getFileFormat(item?.filename || item?.uri);
+        const isVideo = item.mediaType === 'video';
+        const fileFormat = getFileFormat(item.filename || item.uri);
         const resolutionText =
-            item?.width && item?.height
+            item.width && item.height
                 ? `${item.width} x ${item.height}`
                 : 'Unknown';
 
         return (
             <View className="flex-1 flex flex-col p-2">
-                <View className="h-2/3 rounded-2xl overflow-hidden relative">
-                    {item?.mediaType === 'photo' ? (
-                        <Image
-                            source={{ uri: item?.uri }}
-                            className="h-full w-full"
-                            resizeMode="cover"
-                        />
+                <View className="h-2/3 rounded-2xl overflow-hidden relative bg-gray-900">
+                    {isVideo && isActive ? (
+                        <VideoPreview uri={item.uri} />
                     ) : (
-                        <Video
-                            source={{ uri: item?.uri }}
+                        <Image
+                            source={{ uri: item.uri }}
+                            recyclingKey={item.uri}
                             style={{ width: '100%', height: '100%' }}
-                            shouldPlay
-                            resizeMode={ResizeMode.COVER}
-                            isMuted
-                            isLooping
+                            contentFit="cover"
+                            cachePolicy="memory"
+                            accessibilityLabel={item.filename}
                         />
                     )}
+                    {isVideo && !isActive && (
+                        <View className="absolute inset-0 items-center justify-center">
+                            <MaterialIcons
+                                name="play-circle-outline"
+                                size={64}
+                                color="white"
+                            />
+                        </View>
+                    )}
 
-                    {/* More Metadata Button */}
                     <TouchableOpacity
                         onPress={toggleMetadata}
                         className="absolute top-4 right-4 bg-black/50 p-2 rounded-full"
+                        accessibilityRole="button"
+                        accessibilityLabel={
+                            showMetadata ? 'Hide details' : 'Show details'
+                        }
                     >
                         <MaterialIcons name="info" size={24} color="white" />
                     </TouchableOpacity>
 
-                    {/* Full Screen View Button */}
-                    <TouchableOpacity
-                        onPress={() => console.log('View Full Screen')}
-                        className="absolute top-4 left-4 bg-black/50 p-2 rounded-full"
-                    >
-                        <MaterialIcons
-                            name="fullscreen"
-                            size={24}
-                            color="white"
-                        />
-                    </TouchableOpacity>
-
-                    {/* Fading Metadata */}
                     <Animated.View
+                        pointerEvents="none"
                         style={[
                             animatedStyle,
                             {
@@ -109,21 +136,22 @@ const SwipeCard = React.memo(
                         </Text>
                         <Text className="text-white text-sm">
                             Date:{' '}
-                            {item?.creationTime
+                            {item.creationTime
                                 ? new Date(item.creationTime).toDateString()
                                 : 'Unknown'}
                         </Text>
                         <Text className="text-white text-sm">
-                            Size: {bytesToHumanReadable(item?.assetSize || 0)}
+                            Size:{' '}
+                            {size === null ? '…' : bytesToHumanReadable(size)}
                         </Text>
                         <Text className="text-white text-sm">
                             Format: {fileFormat}
                         </Text>
                     </Animated.View>
 
-                    {/* Gradient Overlay */}
                     <LinearGradient
                         colors={['transparent', 'rgba(0,0,0,0.8)']}
+                        pointerEvents="none"
                         style={{
                             position: 'absolute',
                             bottom: 0,
@@ -133,8 +161,10 @@ const SwipeCard = React.memo(
                         }}
                     />
 
-                    {/* Text Details */}
-                    <View className="absolute bottom-4 left-4 right-4 flex flex-row items-center justify-around">
+                    <View
+                        pointerEvents="none"
+                        className="absolute bottom-4 left-4 right-4 flex flex-row items-center justify-around"
+                    >
                         <View className="flex flex-row items-center">
                             <MaterialIcons
                                 name="photo-size-select-large"
@@ -157,7 +187,7 @@ const SwipeCard = React.memo(
                         </View>
                         <View className="flex flex-row items-center">
                             <MaterialIcons
-                                name="image"
+                                name={isVideo ? 'videocam' : 'image'}
                                 size={20}
                                 color="white"
                             />
@@ -171,9 +201,10 @@ const SwipeCard = React.memo(
         );
     },
     (prevProps, nextProps) =>
-        // prevProps.item === nextProps.item &&
+        prevProps.item.uri === nextProps.item.uri &&
         prevProps.index === nextProps.index &&
-        prevProps.totalCount === nextProps.totalCount
+        prevProps.totalCount === nextProps.totalCount &&
+        prevProps.isActive === nextProps.isActive
 );
 
 export default SwipeCard;

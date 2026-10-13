@@ -27,7 +27,7 @@
       <dict>
         <key>CFBundleURLSchemes</key>
         <array>
-          <string>myapp</string>
+          <string>swipe</string>
           <string>com.gomodtidy.swipe</string>
         </array>
       </dict>
@@ -51,12 +51,10 @@
       <key>NSAllowsLocalNetworking</key>
       <true/>
     </dict>
-    <key>NSMicrophoneUsageDescription</key>
-    <string>Allow $(PRODUCT_NAME) to access your microphone</string>
     <key>NSPhotoLibraryAddUsageDescription</key>
-    <string>Allow SwipeTrash to save photos.</string>
+    <string>Allow sWipe to delete the photos and videos you choose.</string>
     <key>NSPhotoLibraryUsageDescription</key>
-    <string>Allow SwipeTrash to access your photos.</string>
+    <string>Allow sWipe to access your photos and videos so you can review them.</string>
     <key>NSUserActivityTypes</key>
     <array>
       <string>$(PRODUCT_BUNDLE_IDENTIFIER).expo.index_route</string>

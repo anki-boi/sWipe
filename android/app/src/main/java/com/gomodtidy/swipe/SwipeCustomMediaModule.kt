@@ -6,23 +6,22 @@ import android.content.ContentResolver
 import android.content.ContentUris
 import android.content.Context
 import android.content.Intent
+import android.database.Cursor
 import android.net.Uri
 import android.os.Build
 import android.provider.MediaStore
 import android.util.Log
-import androidx.annotation.RequiresApi
 import com.facebook.react.bridge.*
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-import java.util.UUID
 
 class SwipeCustomMediaModule(reactContext: ReactApplicationContext) :
         ReactContextBaseJavaModule(reactContext), ActivityEventListener {
     // Class variables to track requests and promises
-    private val pendingPromises = mutableMapOf<String, Promise>()
-    private val requestMap = mutableMapOf<Int, String>()
+    private var pendingDeletePromise: Promise? = null
     private val DELETE_REQUEST_CODE = 1001
+    private val TAG = "SwipeCustomMediaModule"
 
     init {
         // Register as an activity event listener
@@ -33,30 +32,61 @@ class SwipeCustomMediaModule(reactContext: ReactApplicationContext) :
         return "SwipeCustomMediaModule"
     }
 
+    /**
+     * Iterates over all images and videos in MediaStore, invoking [block] for each row.
+     * On API 29+ a single MediaStore.Files query is used; on older APIs the Images and Video
+     * tables are queried separately.
+     */
+    private fun forEachImageOrVideo(columns: Array<String>, block: (Cursor) -> Unit) {
+        val contentResolver = reactApplicationContext.contentResolver
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val selection =
+                    "${MediaStore.Files.FileColumns.MEDIA_TYPE} IN (" +
+                            "${MediaStore.Files.FileColumns.MEDIA_TYPE_IMAGE}," +
+                            "${MediaStore.Files.FileColumns.MEDIA_TYPE_VIDEO})"
+            contentResolver.query(
+                            MediaStore.Files.getContentUri("external"),
+                            columns,
+                            selection,
+                            null,
+                            null
+                    )
+                    ?.use { cursor ->
+                        if (cursor.moveToFirst()) {
+                            do {
+                                block(cursor)
+                            } while (cursor.moveToNext())
+                        }
+                    }
+        } else {
+            val uris =
+                    listOf(
+                            MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                            MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+                    )
+            for (uri in uris) {
+                contentResolver.query(uri, columns, null, null, null)?.use { cursor ->
+                    if (cursor.moveToFirst()) {
+                        do {
+                            block(cursor)
+                        } while (cursor.moveToNext())
+                    }
+                }
+            }
+        }
+    }
+
     @ReactMethod
     fun countImagesByAlbum(promise: Promise) {
         try {
-            val contentResolver = reactApplicationContext.contentResolver
-            val uri = MediaStore.Images.Media.EXTERNAL_CONTENT_URI
             val albumColumn = MediaStore.Images.Media.BUCKET_DISPLAY_NAME
-            val projection = arrayOf(albumColumn)
-
-            val selection = "$albumColumn IS NOT NULL"
-            val sortOrder = "$albumColumn ASC"
-
             val results = mutableMapOf<String, Int>()
 
-            val cursor = contentResolver.query(uri, projection, selection, null, sortOrder)
-            val albumIndex = cursor?.getColumnIndex(albumColumn) ?: 0
-
-            cursor?.use {
-                if (!it.moveToFirst()) {
-                    return
-                }
-                do {
-                    val albumName = it.getString(albumIndex) ?: "Unknown"
-                    results[albumName] = results.getOrDefault(albumName, 0) + 1
-                } while (it.moveToNext())
+            forEachImageOrVideo(arrayOf(albumColumn)) { cursor ->
+                val albumIndex = cursor.getColumnIndex(albumColumn)
+                val albumName =
+                        (if (albumIndex >= 0) cursor.getString(albumIndex) else null) ?: "Unknown"
+                results[albumName] = results.getOrDefault(albumName, 0) + 1
             }
 
             promise.resolve(Arguments.makeNativeMap(results.toMap()))
@@ -69,120 +99,126 @@ class SwipeCustomMediaModule(reactContext: ReactApplicationContext) :
     @ReactMethod
     fun countImagesByMonthYear(promise: Promise) {
         try {
-            val contentResolver = reactApplicationContext.contentResolver
-            val uri = MediaStore.Images.Media.EXTERNAL_CONTENT_URI
-            val column = MediaStore.Images.Media.DATE_MODIFIED
-            val projection = arrayOf(column)
-
-            val selection = "$column IS NOT NULL"
-            val sortOrder = "$column DESC"
+            val dateTakenColumn = MediaStore.Images.Media.DATE_TAKEN // milliseconds
+            val dateAddedColumn = MediaStore.Images.Media.DATE_ADDED // seconds
 
             val results = mutableMapOf<String, Int>()
-            val dateFormat = SimpleDateFormat("yyyy-MM", Locale.getDefault()) // Format timestamps
+            // Device local timezone (default), ASCII digits regardless of device locale
+            val dateFormat = SimpleDateFormat("yyyy-MM", Locale.US)
 
-            val cursor = contentResolver.query(uri, projection, selection, null, sortOrder)
-            val dateIndex = cursor?.getColumnIndex(column) ?: 0
-
-            cursor?.use {
-                it.moveToFirst()
-                if(!it.moveToFirst()){
-                    return
+            forEachImageOrVideo(arrayOf(dateTakenColumn, dateAddedColumn)) { cursor ->
+                val takenIndex = cursor.getColumnIndex(dateTakenColumn)
+                val addedIndex = cursor.getColumnIndex(dateAddedColumn)
+                val taken = if (takenIndex >= 0) cursor.getLong(takenIndex) else 0L
+                val added = if (addedIndex >= 0) cursor.getLong(addedIndex) else 0L
+                // Mirrors expo-media-library creationTime: DATE_TAKEN, falling back to DATE_ADDED
+                val timestamp = if (taken > 0) taken else added * 1000L
+                if (timestamp > 0) {
+                    val monthYear = dateFormat.format(Date(timestamp)) // YYYY-MM
+                    results[monthYear] = results.getOrDefault(monthYear, 0) + 1
+                } else {
+                    Log.w(TAG, "No timestamp found for media item")
                 }
-                var convertToMilliSeconds = 1
-
-                // ✅ FIX: Ensure timestamp is valid in milliseconds ( >year 2000)
-                if(it.getLong(dateIndex) < 946684800000L){
-                    convertToMilliSeconds=1000
-                }
-                do {
-                    val timestamp = it.getLong(dateIndex)*convertToMilliSeconds // Get timestamp
-                    if (timestamp > 0) {
-                        val monthYear = dateFormat.format(Date(timestamp)) // Convert to YYYY-MM
-                        results[monthYear] = results.getOrDefault(monthYear, 0) + 1
-                    }
-                    else{
-                        println("no time stamp found for image")
-                    }
-
-                } while (it.moveToNext())
             }
 
-            promise.resolve(Arguments.makeNativeMap(results as Map<String, Any>?))
+            promise.resolve(Arguments.makeNativeMap(results.toMap()))
 
         } catch (e: Exception) {
             promise.reject("ERROR_COUNTING_IMAGES", "Failed to count images", e)
         }
     }
 
-    @RequiresApi(Build.VERSION_CODES.R) // Android 11+
     @ReactMethod
     fun deletePhotos(photos: ReadableArray, promise: Promise) {
-        val context = reactApplicationContext
-        val urisToDelete = mutableListOf<Uri>()
-
-        // Generate a unique request ID for this deletion operation
-        val requestId = UUID.randomUUID().toString()
-
-        // Store the promise for this specific request
-        pendingPromises[requestId] = promise
-
-        for (i in 0 until photos.size()) {
-            val filePath = photos.getString(i)
-            if (filePath.startsWith("file://")) {
-                val contentUri = getContentUriFromFilePath(context, filePath)
-                if (contentUri != null) {
-                    urisToDelete.add(contentUri)
-                } else {
-                    Log.e("SwipeCustomMediaModule", "Failed to get content URI for: $filePath")
-                }
-            }
-        }
-
-        if (urisToDelete.isEmpty()) {
-            promise.reject("ERROR", "No valid media URIs found for deletion")
-            pendingPromises.remove(requestId)
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+            promise.reject("ERROR_UNSUPPORTED_API", "Media delete requests require Android 11+")
             return
         }
 
-        try {
-            val resolver = context.contentResolver
-            val pendingIntent = MediaStore.createDeleteRequest(resolver, urisToDelete)
-            val intentSender = pendingIntent.intentSender
+        val context = reactApplicationContext
+        val urisToDelete = mutableListOf<Uri>()
+        var unresolvedCount = 0
 
+        for (i in 0 until photos.size()) {
+            val filePath = photos.getString(i)
+            val contentUri = getContentUriFromFilePath(context, filePath)
+            if (contentUri != null) {
+                urisToDelete.add(contentUri)
+            } else {
+                unresolvedCount++
+                Log.e(TAG, "Failed to get content URI for: $filePath")
+            }
+        }
+
+        if (urisToDelete.isEmpty() && unresolvedCount == 0) {
+            promise.reject("ERROR", "No valid media URIs found for deletion")
+            return
+        }
+
+        // Do not partially delete: bail out before showing the dialog.
+        if (unresolvedCount > 0) {
+            promise.reject(
+                    "ERROR_UNRESOLVED_MEDIA",
+                    "Could not resolve $unresolvedCount of ${photos.size()} media items"
+            )
+            return
+        }
+
+        synchronized(this) {
+            if (pendingDeletePromise != null) {
+                promise.reject("ERROR_DELETE_IN_PROGRESS", "A delete request is already pending")
+                return
+            }
+            pendingDeletePromise = promise
+        }
+
+        try {
+            val pendingIntent = MediaStore.createDeleteRequest(context.contentResolver, urisToDelete)
             val activity = currentActivity
             if (activity != null) {
-                // Store the requestId in a map keyed by activityResult requestCode
-                requestMap[DELETE_REQUEST_CODE] = requestId
-
-                activity.startIntentSenderForResult(intentSender, DELETE_REQUEST_CODE, null, 0, 0, 0)
+                activity.startIntentSenderForResult(
+                        pendingIntent.intentSender,
+                        DELETE_REQUEST_CODE,
+                        null,
+                        0,
+                        0,
+                        0
+                )
                 // Don't resolve the promise yet - it will be resolved in onActivityResult
             } else {
-                promise.reject("ERROR", "Activity is null")
-                pendingPromises.remove(requestId)
+                failPendingDelete("ERROR", "Activity is null")
             }
         } catch (e: RecoverableSecurityException) {
-            promise.reject("SECURITY_EXCEPTION", e.localizedMessage)
-            pendingPromises.remove(requestId)
-        } catch (e: Exception) {
-            promise.reject("ERROR", e.localizedMessage)
-            pendingPromises.remove(requestId)
+            failPendingDelete("SECURITY_EXCEPTION", e.localizedMessage)
+        } catch (e: Throwable) {
+            failPendingDelete("ERROR", e.localizedMessage)
         }
+    }
+
+    private fun failPendingDelete(code: String, message: String?) {
+        val promise =
+                synchronized(this) {
+                    val p = pendingDeletePromise
+                    pendingDeletePromise = null
+                    p
+                }
+        promise?.reject(code, message)
     }
 
     override fun onActivityResult(activity: Activity, requestCode: Int, resultCode: Int, data: Intent?) {
         if (requestCode == DELETE_REQUEST_CODE) {
-            val requestId = requestMap[requestCode]
-            if (requestId != null) {
-                val promise = pendingPromises[requestId]
-                if (promise != null) {
-                    if (resultCode == Activity.RESULT_OK) {
-                        promise.resolve("Photos deleted successfully")
-                    } else {
-                        promise.reject("USER_CANCELLED", "User cancelled the deletion")
+            val promise =
+                    synchronized(this) {
+                        val p = pendingDeletePromise
+                        pendingDeletePromise = null
+                        p
                     }
-                    pendingPromises.remove(requestId)
+            if (promise != null) {
+                if (resultCode == Activity.RESULT_OK) {
+                    promise.resolve("Photos deleted successfully")
+                } else {
+                    promise.reject("ERROR_USER_REJECTED", "User cancelled the deletion")
                 }
-                requestMap.remove(requestCode)
             }
         }
     }
@@ -193,7 +229,7 @@ class SwipeCustomMediaModule(reactContext: ReactApplicationContext) :
 
     /**
      * Calculates the total size of media files grouped by their categories
-     * (images, videos, audio, and documents)
+     * (images, videos, audio, and gifs)
      *
      * @param promise Promise to resolve with the media size information
      */
@@ -208,7 +244,6 @@ class SwipeCustomMediaModule(reactContext: ReactApplicationContext) :
             results["videos"] = 0L
             results["audio"] = 0L
             results["gifs"] = 0L
-//            results["documents"] = 0L
 
             // 1. Get Images size (including GIFs)
             processMediaCategoryTotalSize(
@@ -234,17 +269,6 @@ class SwipeCustomMediaModule(reactContext: ReactApplicationContext) :
                 results
             )
 
-            // 4. Get Documents size (API 29+)
-            /*if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                processMediaCategoryTotalSize(
-                    contentResolver,
-                    MediaStore.Files.getContentUri(MediaStore.VOLUME_EXTERNAL),
-                    arrayOf(MediaStore.Files.FileColumns.SIZE, MediaStore.Files.FileColumns.MIME_TYPE),
-                    results,
-                    "${MediaStore.Files.FileColumns.MEDIA_TYPE}=${MediaStore.Files.FileColumns.MEDIA_TYPE_DOCUMENT}"
-                )
-            }*/
-
             // Convert to WritableMap for React Native
             val writableMap = Arguments.createMap()
             for ((category, size) in results) {
@@ -264,10 +288,9 @@ class SwipeCustomMediaModule(reactContext: ReactApplicationContext) :
         contentResolver: ContentResolver,
         uri: Uri,
         projection: Array<String>,
-        results: MutableMap<String, Long>,
-        selection: String? = null
+        results: MutableMap<String, Long>
     ) {
-        contentResolver.query(uri, projection, selection, null, null)?.use { cursor ->
+        contentResolver.query(uri, projection, null, null, null)?.use { cursor ->
             val sizeIndex = cursor.getColumnIndex(projection[0])
             val mimeTypeIndex = cursor.getColumnIndex(projection[1])
 
@@ -293,10 +316,6 @@ class SwipeCustomMediaModule(reactContext: ReactApplicationContext) :
                         mimeType.startsWith("audio/") -> {
                             results["audio"] = results.getOrDefault("audio", 0L) + size
                         }
-                        // Documents (for document-specific queries)
-                        uri == MediaStore.Files.getContentUri(MediaStore.VOLUME_EXTERNAL) -> {
-                            results["documents"] = results.getOrDefault("documents", 0L) + size
-                        }
                     }
                 } while (cursor.moveToNext())
             }
@@ -305,27 +324,42 @@ class SwipeCustomMediaModule(reactContext: ReactApplicationContext) :
 
 
     private fun getContentUriFromFilePath(context: Context, filePath: String): Uri? {
-        val projection = arrayOf(MediaStore.Images.Media._ID)
-        val selection = MediaStore.Images.Media.DATA + "=?"
-        val selectionArgs = arrayOf(filePath.replace("file://", ""))
+        val path = Uri.decode(filePath.removePrefix("file://"))
+        val projection =
+                arrayOf(MediaStore.Files.FileColumns._ID, MediaStore.Files.FileColumns.MEDIA_TYPE)
+        val selection = MediaStore.Files.FileColumns.DATA + "=?"
 
         context.contentResolver.query(
-                        MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                        MediaStore.Files.getContentUri("external"),
                         projection,
                         selection,
-                        selectionArgs,
+                        arrayOf(path),
                         null
                 )
                 ?.use { cursor ->
                     if (cursor.moveToFirst()) {
                         val id =
                                 cursor.getLong(
-                                        cursor.getColumnIndexOrThrow(MediaStore.Images.Media._ID)
+                                        cursor.getColumnIndexOrThrow(
+                                                MediaStore.Files.FileColumns._ID
+                                        )
                                 )
-                        return ContentUris.withAppendedId(
-                                MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
-                                id
-                        )
+                        val baseUri =
+                                when (cursor.getInt(
+                                                cursor.getColumnIndexOrThrow(
+                                                        MediaStore.Files.FileColumns.MEDIA_TYPE
+                                                )
+                                        )
+                                ) {
+                                    MediaStore.Files.FileColumns.MEDIA_TYPE_IMAGE ->
+                                            MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+                                    MediaStore.Files.FileColumns.MEDIA_TYPE_VIDEO ->
+                                            MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+                                    else -> null
+                                }
+                        if (baseUri != null) {
+                            return ContentUris.withAppendedId(baseUri, id)
+                        }
                     }
                 }
         return null

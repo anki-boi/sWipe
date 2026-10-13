@@ -1,32 +1,27 @@
-const monthMap: Record<string, number> = {
-    January: 0,
-    February: 1,
-    March: 2,
-    April: 3,
-    May: 4,
-    June: 5,
-    July: 6,
-    August: 7,
-    September: 8,
-    October: 9,
-    November: 10,
-    December: 11,
-};
+export const MONTH_NAMES = [
+    'January',
+    'February',
+    'March',
+    'April',
+    'May',
+    'June',
+    'July',
+    'August',
+    'September',
+    'October',
+    'November',
+    'December',
+];
 
-// get month string from index
-export const getZeroIndexOfMonth = (month: string) => monthMap[month];
+// Returns the 0-based month index, or -1 for an unknown name
+export const getZeroIndexOfMonth = (month: string) =>
+    MONTH_NAMES.indexOf(month);
 
-export const getMonthNameFromOneBasedIndex = (index: number): string => {
-    const key =
-        Object.keys(monthMap).find((key) => monthMap[key] === index - 1) ?? '';
-    return key;
-};
+export const getMonthNameFromOneBasedIndex = (index: number): string =>
+    MONTH_NAMES[index - 1] ?? '';
 
-export const getMonthNameFromZeroBasedIndex = (index: number): string => {
-    const key =
-        Object.keys(monthMap).find((key) => monthMap[key] === index) ?? '';
-    return key;
-};
+export const getMonthNameFromZeroBasedIndex = (index: number): string =>
+    MONTH_NAMES[index] ?? '';
 
 export const convertDateToRelativeTimeString = (date: Date | null) => {
     if (!date) return 'Never';

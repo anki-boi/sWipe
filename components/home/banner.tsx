@@ -50,19 +50,31 @@ export const Banner = () => {
 
     useFocusEffect(
         useCallback(() => {
+            let active = true;
             const fetchData = async () => {
-                const totalStorageUsedByCategory =
-                    await getMediaSizeByCategory();
-                const totalStorageUsed =
-                    totalStorageUsedByCategory.images +
-                    totalStorageUsedByCategory.videos +
-                    totalStorageUsedByCategory.audio +
-                    totalStorageUsedByCategory.gifs;
-                const totalDeviceStorage =
-                    await FileSystem.getTotalDiskCapacityAsync();
-                setPercentage((totalStorageUsed / totalDeviceStorage) * 100);
+                try {
+                    const totalStorageUsedByCategory =
+                        await getMediaSizeByCategory();
+                    const totalStorageUsed =
+                        totalStorageUsedByCategory.images +
+                        totalStorageUsedByCategory.videos +
+                        totalStorageUsedByCategory.audio +
+                        totalStorageUsedByCategory.gifs;
+                    const totalDeviceStorage =
+                        await FileSystem.getTotalDiskCapacityAsync();
+                    if (active && totalDeviceStorage > 0) {
+                        setPercentage(
+                            (totalStorageUsed / totalDeviceStorage) * 100
+                        );
+                    }
+                } catch (error) {
+                    console.error('Failed to load storage usage:', error);
+                }
             };
             fetchData();
+            return () => {
+                active = false;
+            };
         }, [])
     );
 
@@ -75,13 +87,14 @@ export const Banner = () => {
                 <PieChart percentage={Number(percentage.toFixed(2))} />
 
                 <Text className="text-gray-100 text-lg font-medium  ">
-                    Storage Used
+                    of storage used{'\n'}by photos & videos
                 </Text>
             </View>
 
             <TouchableOpacity
-                className="absolute bottom-5 right-5 flex flex-row items-center bg-white/30 px-4 py-2 rounded-full backdrop-blur-lg shadow-md"
-                onPress={() => router.push('/(root)/stats')}
+                className="absolute bottom-5 right-5 flex flex-row items-center bg-white/30 px-4 py-2 rounded-full shadow-md"
+                onPress={() => router.push('/stats')}
+                accessibilityRole="button"
             >
                 <Text className="text-white text-base font-semibold">
                     View Stats
@@ -90,7 +103,7 @@ export const Banner = () => {
                     name="chevron-right"
                     color="white"
                     size={22}
-                    className="ml-2"
+                    style={{ marginLeft: 8 }}
                 />
             </TouchableOpacity>
         </LinearGradient>
