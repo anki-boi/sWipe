@@ -30,19 +30,21 @@ const addDays = (date: Date, days: number) => {
     return copy;
 };
 
-let counts: DailyCounts | null = null;
+// Memoised so concurrent first callers share one object and no increment
+// lands on a copy that is then thrown away.
+let counts: Promise<DailyCounts> | null = null;
 let saveChain: Promise<void> = Promise.resolve();
 
-async function load(): Promise<DailyCounts> {
-    if (counts) return counts;
-    try {
-        const stored = await AsyncStorage.getItem(DAILY_PROGRESS_KEY);
-        counts = stored ? JSON.parse(stored) : {};
-    } catch (error) {
-        console.error('Failed to load daily progress:', error);
-        counts = {};
+function load(): Promise<DailyCounts> {
+    if (!counts) {
+        counts = AsyncStorage.getItem(DAILY_PROGRESS_KEY)
+            .then((stored) => (stored ? JSON.parse(stored) : {}))
+            .catch((error) => {
+                console.error('Failed to load daily progress:', error);
+                return {};
+            });
     }
-    return counts!;
+    return counts;
 }
 
 function save(data: DailyCounts) {

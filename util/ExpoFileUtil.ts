@@ -1,13 +1,15 @@
 import * as FileSystem from 'expo-file-system';
 
-// Size in bytes, or null if the file doesn't exist (e.g. it was deleted elsewhere)
+// Size in bytes, or null if the file doesn't exist (e.g. it was deleted
+// elsewhere). If the size can't be read, returns 0 rather than null so the
+// file isn't mistaken for a missing one.
 export async function getAssetSize(assetUri: string): Promise<number | null> {
     try {
         const fileInfo = await FileSystem.getInfoAsync(assetUri);
         return fileInfo.exists ? fileInfo.size : null;
     } catch (error) {
         console.error('Error retrieving file info:', error);
-        return null;
+        return 0;
     }
 }
 

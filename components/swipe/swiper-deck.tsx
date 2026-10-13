@@ -1,11 +1,4 @@
-import {
-    View,
-    TouchableOpacity,
-    Alert,
-    ActivityIndicator,
-    Text,
-    StyleSheet,
-} from 'react-native';
+import { View, Text, LayoutChangeEvent } from 'react-native';
 import Swiper from 'react-native-deck-swiper';
 import React, {
     useCallback,
@@ -14,9 +7,17 @@ import React, {
     useRef,
     useState,
 } from 'react';
-import { useFocusEffect } from 'expo-router';
-import { MaterialCommunityIcons, MaterialIcons } from '@expo/vector-icons';
+import { router, useFocusEffect } from 'expo-router';
+import { useIsFocused } from '@react-navigation/native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import SwipeCard from './swipe-card';
+import {
+    ActionButton,
+    EndSummary,
+    ProgressHeader,
+    ReviewPill,
+    Spinner,
+} from './deck-controls';
 import {
     SwipeActionType,
     SwipeComponentInputType,
@@ -26,45 +27,55 @@ import SwipeSession from '@/common/lib/localstorage/lib/SwipeSession';
 import {
     acquireSession,
     getResetEpoch,
-    propagateDeletes,
 } from '@/common/lib/localstorage/SwipeStore';
-import { getAssetSizes } from '@/util/ExpoFileUtil';
-import {
-    deleteMedia,
-    deleteNeedsInAppConfirmation,
-} from '@/common/lib/swipeandroid/SwipeAndroidLibary';
-import { bytesToHumanReadable } from '@/util/MediaUtil';
-
-const shadow3d = {
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.44,
-    shadowRadius: 10.32,
-    elevation: 16,
-};
+import { recordReviewed } from '@/common/lib/goals/DailyProgress';
+import { successFeedback, tapFeedback, warningFeedback } from '@/util/Haptics';
+import { useTheme } from '@/hooks/useTheme';
 
 const END_CARD_URI = 'END_OF_DECK';
+const CARD_MARGIN_X = 12;
+const CARD_MARGIN_TOP = 4;
+// Room below the top card for the cards stacked behind it
+const CARD_MARGIN_BOTTOM = 24;
 
-const confirmAsync = (title: string, message: string, confirmText: string) =>
-    new Promise<boolean>((resolve) =>
-        Alert.alert(
-            title,
-            message,
-            [
+type Direction = 'left' | 'right' | 'top';
+
+const labelWrapper = (
+    alignItems: 'flex-start' | 'flex-end' | 'center',
+    justifyContent: 'flex-start' | 'center'
+) => ({
+    flexDirection: 'column' as const,
+    alignItems,
+    justifyContent,
+    padding: 28,
+});
+
+const Stamp = ({ text, color }: { text: string; color: string }) => (
+    <View
+        style={{
+            borderWidth: 3,
+            borderColor: color,
+            backgroundColor: color,
+            borderRadius: 14,
+            paddingHorizontal: 16,
+            paddingVertical: 6,
+            transform: [
                 {
-                    text: 'Cancel',
-                    style: 'cancel',
-                    onPress: () => resolve(false),
-                },
-                {
-                    text: confirmText,
-                    style: 'destructive',
-                    onPress: () => resolve(true),
+                    rotate:
+                        text === 'DELETE'
+                            ? '12deg'
+                            : text === 'KEEP'
+                              ? '-12deg'
+                              : '0deg',
                 },
             ],
-            { cancelable: true, onDismiss: () => resolve(false) }
-        )
-    );
+        }}
+    >
+        <Text className="font-rubik-bold text-2xl tracking-widest text-on-primary">
+            {text}
+        </Text>
+    </View>
+);
 
 const SwiperDeck = ({
     mediaAssets,
@@ -72,6 +83,9 @@ const SwiperDeck = ({
     screenKeyType,
     reloadAssets,
 }: SwipeComponentInputType) => {
+    const { colors } = useTheme();
+    const insets = useSafeAreaInsets();
+    const isFocused = useIsFocused();
     const swiperRef = useRef<Swiper<AssetType>>(null);
     const [session, setSession] = useState<SwipeSession | null>(null);
     const [loadError, setLoadError] = useState(false);
@@ -81,11 +95,15 @@ const SwiperDeck = ({
     const [currentIndex, setCurrentIndex] = useState(0);
     // Bumped after every session change so derived values re-render
     const [revision, setRevision] = useState(0);
-    const [showConfirmation, setShowConfirmation] = useState(false);
-    const [isDeleting, setIsDeleting] = useState(false);
+    // Size of the area the cards are laid out in
+    const [area, setArea] = useState<{ width: number; height: number } | null>(
+        null
+    );
     // Number of cards swiped in the current Swiper instance that can be
     // animated back with swipeBack()
     const swipeBackDepth = useRef(0);
+    // Last drag offset reported by Swiper, used to classify the swipe
+    const lastDrag = useRef<{ x: number; y: number } | null>(null);
     // True while a card animation started by a button or undo is running;
     // Swiper ignores swipeBack() during animations, so undo must wait.
     const isAnimating = useRef(false);
@@ -93,8 +111,14 @@ const SwiperDeck = ({
     // Bumped to rebuild the deck after progress was reset in Settings
     const [reloadToken, setReloadToken] = useState(0);
     const seenResetEpoch = useRef(getResetEpoch());
+    // Session revision this deck last accounted for. When it differs on focus,
+    // another screen (the review screen) changed decisions or deleted items.
+    const seenSessionRevision = useRef(0);
 
-    const refresh = () => setRevision((r) => r + 1);
+    const refresh = () => {
+        if (session) seenSessionRevision.current = session.revision;
+        setRevision((r) => r + 1);
+    };
 
     const startAnimation = () => {
         isAnimating.current = true;
@@ -123,16 +147,13 @@ const SwiperDeck = ({
                 }
                 const first = loaded.sync(mediaAssets.map((a) => a.uri));
                 loaded.scheduleSave();
+                seenSessionRevision.current = loaded.revision;
                 swipeBackDepth.current = 0;
                 setSession(loaded);
                 setStartIndex(first);
                 setCurrentIndex(first);
                 setDeckId((id) => id + 1);
-                refresh();
-                setShowConfirmation(
-                    first >= mediaAssets.length &&
-                        loaded.getPendingDeleteUris().length > 0
-                );
+                setRevision((r) => r + 1);
             })
             .catch((error) => {
                 console.error('Failed to open swipe session', error);
@@ -149,11 +170,19 @@ const SwiperDeck = ({
             if (seenResetEpoch.current !== getResetEpoch()) {
                 seenResetEpoch.current = getResetEpoch();
                 setReloadToken((token) => token + 1);
+            } else if (
+                session &&
+                session.revision !== seenSessionRevision.current
+            ) {
+                // The review screen kept or deleted items while we were away
+                seenSessionRevision.current = session.revision;
+                reloadAssets();
             }
             // Persist progress when leaving the screen
             return () => {
                 session?.flush();
             };
+            // eslint-disable-next-line react-hooks/exhaustive-deps
         }, [session])
     );
 
@@ -171,29 +200,56 @@ const SwiperDeck = ({
     );
 
     const isAtEnd = currentIndex >= mediaAssets.length;
+    const keepCount = session?.metadata.keepCount ?? 0;
+    const skipCount = session?.metadata.skipCount ?? 0;
+    const reviewed = keepCount + skipCount + pendingDeletes.length;
 
-    const handleSwiped = (action: SwipeActionType, cardIndex: number) => {
+    // The library picks right/left before top using fixed thresholds, so an
+    // upward drag that drifts sideways would count as Keep/Delete even though
+    // the overlay showed SKIP. Classify drags by their dominant axis instead.
+    const resolveAction = (fallback: SwipeActionType): SwipeActionType => {
+        const drag = lastDrag.current;
+        lastDrag.current = null;
+        if (!drag) return fallback;
+        if (drag.y < 0 && Math.abs(drag.y) > Math.abs(drag.x)) {
+            return SwipeActionType.SKIP;
+        }
+        if (fallback === SwipeActionType.SKIP) {
+            return drag.x < 0 ? SwipeActionType.DELETE : SwipeActionType.KEEP;
+        }
+        return fallback;
+    };
+
+    const handleSwiped = (swiped: SwipeActionType, cardIndex: number) => {
         const asset = mediaAssets[cardIndex];
+        const action = resolveAction(swiped);
         if (!asset || !session) {
             return;
         }
+        if (action === SwipeActionType.DELETE) warningFeedback();
+        else tapFeedback();
+        // Re-swiping after "Start over" changes a decision; it isn't new work
+        const isNewReview = session.getDecision(asset.uri) === undefined;
         session.record(asset.uri, action);
         session.scheduleSave();
+        if (isNewReview) recordReviewed(1);
         swipeBackDepth.current++;
         setCurrentIndex(cardIndex + 1);
         refresh();
         if (cardIndex === mediaAssets.length - 1) {
-            setShowConfirmation(true);
+            successFeedback();
         }
     };
 
-    const swipeWithButton = (direction: 'left' | 'right') => {
+    const swipeWithButton = (direction: Direction) => {
         if (isAnimating.current || !swiperRef.current) {
             return;
         }
+        lastDrag.current = null;
         startAnimation();
         if (direction === 'left') swiperRef.current.swipeLeft();
-        else swiperRef.current.swipeRight();
+        else if (direction === 'right') swiperRef.current.swipeRight();
+        else swiperRef.current.swipeTop();
     };
 
     const undoLastAction = () => {
@@ -204,8 +260,9 @@ const SwiperDeck = ({
         if (!entry) {
             return;
         }
+        tapFeedback();
         session.scheduleSave();
-        setShowConfirmation(false);
+        if (!entry.previous) recordReviewed(-1);
         refresh();
 
         const index = mediaAssets.findIndex((a) => a.uri === entry.uri);
@@ -223,104 +280,45 @@ const SwiperDeck = ({
         setCurrentIndex(index);
     };
 
-    const handleReviewAgain = () => {
-        setShowConfirmation(false);
+    const startOver = () => {
         swipeBackDepth.current = 0;
         swiperRef.current?.jumpToCardIndex(0);
         setCurrentIndex(0);
     };
 
-    const proceedToDelete = async () => {
-        if (!session || isDeleting) {
-            return;
-        }
-        if (pendingDeletes.length === 0) {
-            setShowConfirmation(false);
-            Alert.alert(
-                'Nothing to delete',
-                'Swipe left on the items you want to delete.'
-            );
-            return;
-        }
-
-        setIsDeleting(true);
-        try {
-            const sizes = await getAssetSizes(
-                pendingDeletes.map((asset) => asset.uri)
-            );
-            // Items already gone from the device can't be deleted again
-            const missing = pendingDeletes.filter((_, i) => sizes[i] === null);
-            const toDelete = pendingDeletes
-                .map((asset, i) => ({ ...asset, assetSize: sizes[i] ?? 0 }))
-                .filter((_, i) => sizes[i] !== null);
-            if (missing.length > 0) {
-                session.forget(missing.map((asset) => asset.uri));
-            }
-            if (toDelete.length === 0) {
-                await reloadAssets();
-                return;
-            }
-
-            const totalSize = toDelete.reduce((t, a) => t + a.assetSize, 0);
-            if (
-                deleteNeedsInAppConfirmation() &&
-                !(await confirmAsync(
-                    'Delete media?',
-                    `${toDelete.length} item(s) (${bytesToHumanReadable(totalSize)}) will be permanently deleted.`,
-                    'Delete'
-                ))
-            ) {
-                return;
-            }
-
-            const result = await deleteMedia(toDelete);
-            if (result.status === 'deleted') {
-                session.markDeleted(
-                    toDelete.map((asset) => asset.uri),
-                    totalSize
-                );
-                await session.flush();
-                await propagateDeletes(screenKeyType, toDelete);
-                setShowConfirmation(false);
-                Alert.alert(
-                    'Deleted',
-                    `Deleted ${toDelete.length} item(s) and freed ${bytesToHumanReadable(totalSize)}.`
-                );
-                await reloadAssets();
-            } else if (result.status === 'failed') {
-                Alert.alert('Could not delete', result.message);
-            }
-        } catch (error) {
-            console.error('Error deleting assets:', error);
-            Alert.alert('Error', 'Failed to delete the selected media.');
-        } finally {
-            session.scheduleSave();
-            refresh();
-            setIsDeleting(false);
-        }
+    const openReview = () => {
+        session?.flush();
+        router.push({
+            pathname: '/review/[screenKeyType]/[screenKey]',
+            params: { screenKeyType, screenKey: swipeKey },
+        });
     };
 
-    const overlayLabels = useMemo(() => {
-        const labelStyle = (backgroundColor: string) => ({
-            label: {
-                backgroundColor,
-                color: 'white',
-                fontSize: 24,
-                borderRadius: 12,
-                padding: 10,
-                overflow: 'hidden' as const,
-            },
-            wrapper: {
-                flexDirection: 'column' as const,
-                alignItems: 'center' as const,
-                justifyContent: 'center' as const,
-            },
+    const openViewer = useCallback((item: AssetType) => {
+        router.push({
+            pathname: '/viewer',
+            params: { uri: item.uri, mediaType: item.mediaType },
         });
-        return {
-            left: { title: 'Delete', style: labelStyle('#dc2626') },
-            right: { title: 'Keep', style: labelStyle('#16a34a') },
-        };
     }, []);
+
+    const overlayLabels = useMemo(
+        () => ({
+            // Labels sit on the opposite corner from the drag direction
+            left: {
+                element: <Stamp text="DELETE" color={colors.danger} />,
+                style: { wrapper: labelWrapper('flex-end', 'flex-start') },
+            },
+            right: {
+                element: <Stamp text="KEEP" color={colors.success} />,
+                style: { wrapper: labelWrapper('flex-start', 'flex-start') },
+            },
+            top: {
+                element: <Stamp text="SKIP" color={colors.primary} />,
+                style: { wrapper: labelWrapper('center', 'center') },
+            },
+        }),
+        [colors.danger, colors.success, colors.primary]
+    );
 
     const cards = useMemo(() => {
         const endCard: AssetType = {
@@ -339,33 +337,32 @@ const SwiperDeck = ({
     }, [mediaAssets]);
 
     const renderCard = (item: AssetType | undefined, index: number) => {
-        if (!item) return null;
-        if (item.uri === END_CARD_URI) {
-            return (
-                <View className="flex-1 bg-gray-100 rounded-3xl justify-center items-center p-6">
-                    <Text className="text-xl font-bold text-gray-700 mb-2">
-                        All caught up
-                    </Text>
-                    <Text className="text-gray-500 text-center">
-                        You've gone through everything here.
-                    </Text>
-                </View>
-            );
-        }
+        // The end-of-deck summary is drawn over the deck, so this is a spacer
+        if (!item || item.uri === END_CARD_URI) return <View />;
         return (
             <SwipeCard
                 item={item}
                 index={index}
                 totalCount={mediaAssets.length}
-                isActive={index === currentIndex}
+                isActive={isFocused && index === currentIndex}
+                onOpen={openViewer}
             />
+        );
+    };
+
+    const onAreaLayout = (e: LayoutChangeEvent) => {
+        const { width, height } = e.nativeEvent.layout;
+        setArea((prev) =>
+            prev && prev.width === width && prev.height === height
+                ? prev
+                : { width, height }
         );
     };
 
     if (loadError) {
         return (
-            <View style={styles.centered}>
-                <Text className="text-gray-500">
+            <View className="flex-1 items-center justify-center px-6">
+                <Text className="text-center font-rubik text-muted">
                     Couldn't load your progress.
                 </Text>
             </View>
@@ -373,163 +370,133 @@ const SwiperDeck = ({
     }
 
     if (!session) {
-        return (
-            <View style={styles.centered}>
-                <ActivityIndicator size="large" color="#2563eb" />
-            </View>
-        );
+        return <Spinner />;
     }
 
-    const pendingSize = pendingDeletes.reduce((t, a) => t + a.assetSize, 0);
+    const controlsDisabled = isAtEnd;
 
     return (
         <View className="flex-1">
-            {showConfirmation && (
-                <View className="absolute inset-0 bg-black/70 z-50 justify-center items-center p-6">
-                    <View className="bg-white rounded-2xl p-6 w-full max-w-sm">
-                        <Text className="text-xl font-bold text-center mb-4">
-                            All Done!
-                        </Text>
-                        <Text className="text-gray-700 text-center mb-6">
-                            {pendingDeletes.length > 0
-                                ? `You marked ${pendingDeletes.length} item(s) for deletion${pendingSize ? ` (${bytesToHumanReadable(pendingSize)})` : ''}. Delete them now?`
-                                : 'You have reviewed everything here and nothing is marked for deletion.'}
-                        </Text>
-                        <View className="flex-row justify-between gap-x-4">
-                            <TouchableOpacity
-                                className="flex-1 bg-gray-200 py-3 rounded-lg items-center"
-                                onPress={handleReviewAgain}
-                                disabled={isDeleting}
-                            >
-                                <Text className="text-gray-800 font-medium">
-                                    Review Again
-                                </Text>
-                            </TouchableOpacity>
-                            {pendingDeletes.length > 0 && (
-                                <TouchableOpacity
-                                    className="flex-1 bg-red-600 py-3 rounded-lg items-center"
-                                    onPress={proceedToDelete}
-                                    disabled={isDeleting}
-                                >
-                                    {isDeleting ? (
-                                        <ActivityIndicator color="white" />
-                                    ) : (
-                                        <Text className="text-white font-medium">
-                                            Delete
-                                        </Text>
-                                    )}
-                                </TouchableOpacity>
-                            )}
-                        </View>
+            <ProgressHeader reviewed={reviewed} total={mediaAssets.length} />
+            <View className="flex-1" onLayout={onAreaLayout}>
+                {area && (
+                    <Swiper
+                        key={deckId}
+                        ref={swiperRef}
+                        containerStyle={{ backgroundColor: 'transparent' }}
+                        cardStyle={{
+                            top: CARD_MARGIN_TOP,
+                            left: CARD_MARGIN_X,
+                            width: area.width - CARD_MARGIN_X * 2,
+                            height:
+                                area.height -
+                                CARD_MARGIN_TOP -
+                                CARD_MARGIN_BOTTOM,
+                        }}
+                        cards={cards}
+                        cardIndex={startIndex}
+                        stackSize={Math.min(2, cards.length)}
+                        disableBottomSwipe
+                        disableTopSwipe={isAtEnd}
+                        disableLeftSwipe={isAtEnd}
+                        disableRightSwipe={isAtEnd}
+                        onSwipedLeft={(cardIndex) =>
+                            handleSwiped(SwipeActionType.DELETE, cardIndex)
+                        }
+                        onSwipedRight={(cardIndex) =>
+                            handleSwiped(SwipeActionType.KEEP, cardIndex)
+                        }
+                        onSwipedTop={(cardIndex) =>
+                            handleSwiped(SwipeActionType.SKIP, cardIndex)
+                        }
+                        // Fires after every completed swipe and swipe-back
+                        onSwiped={endAnimation}
+                        onSwiping={(x: number, y: number) => {
+                            lastDrag.current = { x, y };
+                        }}
+                        onSwipedAborted={() => {
+                            lastDrag.current = null;
+                            endAnimation();
+                        }}
+                        keyExtractor={(item: AssetType) => item.uri}
+                        swipeBackCard
+                        animateCardOpacity
+                        swipeAnimationDuration={100}
+                        animateOverlayLabelsOpacity
+                        overlayLabels={overlayLabels}
+                        renderCard={renderCard}
+                        stackAnimationFriction={15}
+                        stackAnimationTension={80}
+                    />
+                )}
+                {isAtEnd && area && (
+                    <View
+                        className="absolute"
+                        style={{
+                            top: CARD_MARGIN_TOP,
+                            left: CARD_MARGIN_X,
+                            width: area.width - CARD_MARGIN_X * 2,
+                            height:
+                                area.height -
+                                CARD_MARGIN_TOP -
+                                CARD_MARGIN_BOTTOM,
+                        }}
+                    >
+                        <EndSummary
+                            kept={keepCount}
+                            skipped={skipCount}
+                            marked={pendingDeletes.length}
+                            onReview={openReview}
+                            onStartOver={startOver}
+                        />
                     </View>
-                </View>
-            )}
-            <View className="flex-1 bg-transparent z-10">
-                <Swiper
-                    key={deckId}
-                    ref={swiperRef}
-                    containerStyle={{ backgroundColor: 'transparent' }}
-                    cards={cards}
-                    cardIndex={startIndex}
-                    stackSize={Math.min(2, cards.length)}
-                    disableTopSwipe
-                    disableBottomSwipe
-                    disableLeftSwipe={isAtEnd || isDeleting}
-                    disableRightSwipe={isAtEnd || isDeleting}
-                    onSwipedLeft={(cardIndex) =>
-                        handleSwiped(SwipeActionType.DELETE, cardIndex)
-                    }
-                    onSwipedRight={(cardIndex) =>
-                        handleSwiped(SwipeActionType.KEEP, cardIndex)
-                    }
-                    // Fires after every completed swipe and swipe-back
-                    onSwiped={endAnimation}
-                    onSwipedAborted={endAnimation}
-                    keyExtractor={(item: AssetType) => item.uri}
-                    swipeBackCard
-                    animateCardOpacity
-                    swipeAnimationDuration={100}
-                    animateOverlayLabelsOpacity
-                    overlayLabels={overlayLabels}
-                    renderCard={renderCard}
-                    stackAnimationFriction={15}
-                    stackAnimationTension={80}
-                />
+                )}
             </View>
-            <View className="h-1/3 flex flex-row items-center justify-around z-50">
-                <DeckButton
-                    label="Delete"
-                    icon={<MaterialCommunityIcons name="delete" size={25} />}
-                    color="#dc2626"
-                    disabled={isAtEnd || showConfirmation || isDeleting}
-                    onPress={() => swipeWithButton('left')}
-                />
-                <DeckButton
-                    label="Undo"
-                    icon={<MaterialCommunityIcons name="undo" size={25} />}
-                    color="#3b82f6"
-                    disabled={!canUndo || isDeleting}
-                    onPress={undoLastAction}
-                />
-                <DeckButton
-                    label={`Delete ${pendingDeletes.length} marked item(s)`}
-                    icon={<MaterialIcons name="done-all" size={25} />}
-                    color="#1d4ed8"
-                    disabled={pendingDeletes.length === 0 || isDeleting}
-                    onPress={() => setShowConfirmation(true)}
-                    badge={pendingDeletes.length}
-                />
-                <DeckButton
-                    label="Keep"
-                    icon={<MaterialCommunityIcons name="check" size={25} />}
-                    color="#16a34a"
-                    disabled={isAtEnd || showConfirmation || isDeleting}
-                    onPress={() => swipeWithButton('right')}
-                />
+            <View style={{ paddingBottom: Math.max(insets.bottom, 12) }}>
+                {pendingDeletes.length > 0 && (
+                    <View className="mb-3">
+                        <ReviewPill
+                            count={pendingDeletes.length}
+                            onPress={openReview}
+                            disabled={false}
+                        />
+                    </View>
+                )}
+                <View className="flex-row items-start justify-evenly px-2">
+                    <ActionButton
+                        label="Undo"
+                        icon="undo"
+                        tone="muted"
+                        size={52}
+                        disabled={!canUndo}
+                        onPress={undoLastAction}
+                    />
+                    <ActionButton
+                        label="Delete"
+                        icon="delete"
+                        tone="danger"
+                        disabled={controlsDisabled}
+                        onPress={() => swipeWithButton('left')}
+                    />
+                    <ActionButton
+                        label="Skip"
+                        icon="skip-next"
+                        tone="primary"
+                        size={52}
+                        disabled={controlsDisabled}
+                        onPress={() => swipeWithButton('top')}
+                    />
+                    <ActionButton
+                        label="Keep"
+                        icon="check"
+                        tone="success"
+                        disabled={controlsDisabled}
+                        onPress={() => swipeWithButton('right')}
+                    />
+                </View>
             </View>
         </View>
     );
 };
-
-const DeckButton = ({
-    label,
-    icon,
-    color,
-    disabled,
-    onPress,
-    badge,
-}: {
-    label: string;
-    icon: React.ReactElement<{ color?: string }>;
-    color: string;
-    disabled: boolean;
-    onPress: () => void;
-    badge?: number;
-}) => (
-    <TouchableOpacity
-        style={[shadow3d, disabled && { opacity: 0.5 }]}
-        className="h-20 w-20 rounded-full bg-gray-50 flex justify-center items-center border border-gray-100"
-        onPress={onPress}
-        disabled={disabled}
-        accessibilityRole="button"
-        accessibilityLabel={label}
-        accessibilityState={{ disabled }}
-    >
-        {React.cloneElement(icon, { color: disabled ? '#9ca3af' : color })}
-        {!!badge && (
-            <View className="absolute -top-1 -right-1 bg-red-600 rounded-full min-w-6 h-6 px-1 items-center justify-center">
-                <Text className="text-white text-xs font-bold">{badge}</Text>
-            </View>
-        )}
-    </TouchableOpacity>
-);
-
-const styles = StyleSheet.create({
-    centered: {
-        flex: 1,
-        justifyContent: 'center',
-        alignItems: 'center',
-    },
-});
 
 export default SwiperDeck;

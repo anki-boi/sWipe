@@ -5,27 +5,34 @@ sWipe is an open-source media management app designed to help users declutter th
 ## Features
 
 - [x] **Swipe-Based Sorting**
-- **Swipe Left → Trash**: Marks media for deletion; nothing is deleted until you confirm.
-- **Swipe Right → Keep**: Retains media in the gallery.
+- - **Swipe Left → Delete**: Marks media for deletion; nothing is deleted until you confirm.
+- - **Swipe Right → Keep**, **Swipe Up → Skip**, with undo.
+- - Tap a card for a full-screen, zoomable view.
+
+- [x] **Review before delete**
+- - See everything you marked in a grid and un-mark anything before deleting.
+
+- [x] **Smart filters**
+- - Screenshots, Long videos, On this day and Oldest first, alongside months and albums.
+
+- [x] **Daily Cleanup Goals**
+- - A daily target with streaks, so you can declutter in small steps.
+
+- [x] **Stats**
+- - Space freed, items deleted, streaks and the last 7 days.
+
+- [x] **Light & dark theme**, haptics, first-run intro
 
 - [x] **Free & Open Source**
-- No locked features, no subscriptions
-- Privacy Focussed
-
+- - No locked features, no subscriptions
+- - Privacy focused: everything stays on your device
 
 ## Future Improvements
 
-- [ ] **Daily Cleanup Goals**
-- - Helps users declutter in small, manageable steps instead of overwhelming them.
-
-- [ ] **Smart Insights & Stats**
-- - Tracks photo-taking habits and **generates a heatmap** of media activity.
-- - Provides insights into how frequently users capture photos and videos.
-
-- [ ] Publish on fdroid
+- [ ] Publish on F-Droid
 
 - [ ] Add WebDAV support
-- - We are eager to add WebDAV support so you can cleanup media in remote web directories like NextCloud
+- - We are eager to add WebDAV support so you can clean up media in remote web directories like Nextcloud
 
 - [ ] iOS Support
 

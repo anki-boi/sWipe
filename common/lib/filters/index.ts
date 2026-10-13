@@ -39,22 +39,37 @@ async function loadScreenshots(): Promise<MediaLibrary.Asset[]> {
 }
 
 async function loadLongVideos(): Promise<MediaLibrary.Asset[]> {
-    const page = await getAllAssets({
-        mediaType: ['video'],
-        sortBy: [['duration', false]],
-    });
-    return page.assets
-        .filter((asset) => asset.duration >= LONG_VIDEO_SECONDS)
-        .slice(0, MAX_FILTER_ITEMS);
+    // Sorted longest first, so stop paging once videos get too short
+    const videos: MediaLibrary.Asset[] = [];
+    let after: string | undefined;
+    while (videos.length < MAX_FILTER_ITEMS) {
+        const page = await MediaLibrary.getAssetsAsync({
+            mediaType: ['video'],
+            sortBy: [['duration', false]],
+            first: 100,
+            after,
+        });
+        const long = page.assets.filter(
+            (asset) => asset.duration >= LONG_VIDEO_SECONDS
+        );
+        videos.push(...long);
+        if (long.length < page.assets.length || !page.hasNextPage) break;
+        after = page.endCursor;
+    }
+    return videos.slice(0, MAX_FILTER_ITEMS);
 }
 
 async function loadOldest(): Promise<MediaLibrary.Asset[]> {
+    // Items without a capture date sort first and aren't really "old"; fetch
+    // extra and drop them.
     const page = await MediaLibrary.getAssetsAsync({
         mediaType: MEDIA_TYPES,
         sortBy: [['creationTime', true]],
-        first: MAX_FILTER_ITEMS,
+        first: MAX_FILTER_ITEMS * 3,
     });
-    return page.assets;
+    return page.assets
+        .filter((asset) => asset.creationTime > 0)
+        .slice(0, MAX_FILTER_ITEMS);
 }
 
 async function loadOnThisDay(now: Date = new Date()) {

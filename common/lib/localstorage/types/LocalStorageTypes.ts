@@ -17,6 +17,9 @@ export interface AssetType {
 export interface ActionHistoryEntry {
     uri: string;
     action: SwipeActionType;
+    // Decision the item had before this action (when swiped again after
+    // "Start over"); undo restores it
+    previous?: SwipeActionType;
 }
 
 // Persisted per-screen swipe decisions, stored separately from the metadata so
