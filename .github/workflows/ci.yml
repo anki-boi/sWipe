@@ -4,6 +4,7 @@ on:
   push:
     branches: [master]
   pull_request:
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -40,3 +41,35 @@ jobs:
       - name: Assemble debug APK
         working-directory: android
         run: ./gradlew assembleDebug --no-daemon
+
+  release-apk:
+    name: Release APK
+    # Installable APK (JS bundled in) for every push to master
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.2.21
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v4
+      - run: bun install --frozen-lockfile
+      - name: Assemble release APK
+        working-directory: android
+        # Signed with SWIPE_UPLOAD_* when those secrets are configured,
+        # otherwise with the debug keystore (fine for sideloading)
+        env:
+          SWIPE_UPLOAD_STORE_FILE: ${{ secrets.SWIPE_UPLOAD_STORE_FILE }}
+          SWIPE_UPLOAD_STORE_PASSWORD: ${{ secrets.SWIPE_UPLOAD_STORE_PASSWORD }}
+          SWIPE_UPLOAD_KEY_ALIAS: ${{ secrets.SWIPE_UPLOAD_KEY_ALIAS }}
+          SWIPE_UPLOAD_KEY_PASSWORD: ${{ secrets.SWIPE_UPLOAD_KEY_PASSWORD }}
+        run: ./gradlew assembleRelease --no-daemon
+      - uses: actions/upload-artifact@v4
+        with:
+          name: swipe-release-apk
+          path: android/app/build/outputs/apk/release/*.apk
+          retention-days: 30
