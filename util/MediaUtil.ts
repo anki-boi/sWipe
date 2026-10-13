@@ -8,7 +8,7 @@ const PAGE_SIZE = 500;
 type MediaPage = MediaLibrary.PagedInfo<MediaLibrary.Asset>;
 
 // Fetches every page for the given options and returns them merged into one page.
-async function getAllAssets(
+export async function getAllAssets(
     options: Omit<MediaLibrary.AssetsOptions, 'first' | 'after'>
 ): Promise<MediaPage> {
     const assets: MediaLibrary.Asset[] = [];

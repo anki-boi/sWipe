@@ -1,12 +1,8 @@
 import { View, Text, ActivityIndicator, TouchableOpacity } from 'react-native';
 import { useLocalSearchParams } from 'expo-router';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import {
-    getMediaByAlbum,
-    getMediaByMonth,
-    toAssetType,
-} from '@/util/MediaUtil';
-import { SwipeScreenKeyType } from '@/common/types/SwipeMediaTypes';
+import { toAssetType } from '@/util/MediaUtil';
+import { getScreenTitle, loadScreenMedia } from '@/common/lib/filters';
 import SwiperDeck from '@/components/swipe/swiper-deck';
 import { AssetType } from '@/common/lib/localstorage/types/LocalStorageTypes';
 import { parseScreenKeyType } from '@/common/lib/localstorage/lib/StorageKeys';
@@ -34,14 +30,11 @@ export default function SwipeScreen() {
             return;
         }
         try {
-            const page =
-                screenKeyType === SwipeScreenKeyType.MONTH
-                    ? await getMediaByMonth(screenKey)
-                    : await getMediaByAlbum(screenKey);
+            const assets = await loadScreenMedia(screenKeyType, screenKey);
             if (id === loadId.current) {
                 setState({
                     status: 'ready',
-                    assets: page.assets.map(toAssetType),
+                    assets: assets.map(toAssetType),
                 });
             }
         } catch (error) {
@@ -68,7 +61,9 @@ export default function SwipeScreen() {
                 className="text-2xl font-rubik-semibold text-gray-800 mb-2"
                 numberOfLines={1}
             >
-                {screenKey}
+                {screenKeyType
+                    ? getScreenTitle(screenKeyType, screenKey)
+                    : screenKey}
             </Text>
             {state.status === 'loading' && (
                 <View className="flex-1 items-center justify-center">

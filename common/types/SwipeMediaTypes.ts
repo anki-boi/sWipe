@@ -20,6 +20,8 @@ export interface SwipeComponentInputType {
 export enum SwipeScreenKeyType {
     MONTH = 'Month',
     ALBUM = 'Album',
+    // A smart filter such as "Screenshots"; the screen key is the filter id
+    FILTER = 'Filter',
 }
 
 export enum SwipeActionType {
